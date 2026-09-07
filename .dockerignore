@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.env
+*.py[cod]
+config/runtime.yaml
+config/credentials.enc
+logs/
+state/
+updates/*
+!updates/.gitkeep
+tests/
+*.service
+commands.txt

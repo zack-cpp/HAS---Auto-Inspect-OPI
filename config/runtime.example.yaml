@@ -1,0 +1,23 @@
+version: 1
+device_id: CHANGE-ME
+brokers:
+  local:
+    host: host.docker.internal
+    port: 1883
+  remote:
+    host: andon-dev.web.id
+    port: 1883
+ota:
+  source_base_url: http://andon-dev.web.id:9000
+  download_timeout_seconds: 30
+  updates_dir: /data/updates
+scanner:
+  char_timeout_seconds: 0.2
+storage:
+  queue_dir: /data/queue
+  log_dir: /data/logs
+runtime:
+  log_level: INFO
+  reconnect_min_seconds: 2
+  reconnect_max_seconds: 30
+  config_poll_seconds: 1.0

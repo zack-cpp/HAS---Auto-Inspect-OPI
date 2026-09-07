@@ -1,0 +1,129 @@
+name: counter-inspect
+
+x-python-service: &python-service
+  image: counter-inspect:1.0.0
+  build:
+    context: .
+    dockerfile: Dockerfile
+  platform: linux/arm64
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  healthcheck:
+    test: ["CMD", "python", "-m", "counter_inspect.health", "/tmp/counter-health", "15"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 15s
+
+services:
+  mqtt-bridge:
+    <<: *python-service
+    command: ["python", "-m", "counter_inspect.bridge"]
+    user: "10001:10001"
+    volumes:
+      - ./config:/config:ro
+      - counter_secret_key:/key:ro
+      - ./logs:/data/logs
+      - ./state/queue:/data/queue
+
+  ota-handler:
+    <<: *python-service
+    command: ["python", "-m", "counter_inspect.ota"]
+    user: "10001:10001"
+    volumes:
+      - ./config:/config:ro
+      - counter_secret_key:/key:ro
+      - ./logs:/data/logs
+      - ./updates:/data/updates
+
+  scanner-inspect:
+    <<: *python-service
+    command: ["python", "-m", "counter_inspect.scanner"]
+    # The X11 cookie remains read-only. Capabilities are dropped and the root
+    # filesystem remains read-only even though the service needs desktop access.
+    user: "0:0"
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+      XAUTHORITY: /run/xauth/Xauthority
+    volumes:
+      - ./config:/config:ro
+      - counter_secret_key:/key:ro
+      - ./logs:/data/logs
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${XAUTHORITY_PATH:?Set XAUTHORITY_PATH in .env}
+        target: /run/xauth/Xauthority
+        read_only: true
+        bind:
+          create_host_path: false
+
+  updates-http:
+    image: nginx:1.27.3-alpine
+    platform: linux/arm64
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${OTA_HTTP_PORT:-80}:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./updates:/srv/updates:ro
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  counterctl:
+    <<: *python-service
+    command: ["python", "-m", "counter_inspect.cli"]
+    user: "0:0"
+    restart: "no"
+    read_only: false
+    profiles:
+      - tools
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+      XAUTHORITY: /run/xauth/Xauthority
+    volumes:
+      - ./config:/config
+      - counter_secret_key:/key
+      - ./logs:/data/logs
+      - ./state/queue:/data/queue
+      - ./updates:/data/updates
+      - type: bind
+        source: /tmp/.X11-unix
+        target: /tmp/.X11-unix
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${XAUTHORITY_PATH:?Set XAUTHORITY_PATH in .env}
+        target: /run/xauth/Xauthority
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      disable: true
+
+volumes:
+  counter_secret_key:

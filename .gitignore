@@ -1,0 +1,5 @@
+/.env.example
+/counter_jobsend_logger.service
+/counter_mqtt_bridge.service
+/logs
+/scanner_inspect.service

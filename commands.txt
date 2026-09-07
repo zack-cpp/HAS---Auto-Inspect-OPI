@@ -1,0 +1,40 @@
+export DISPLAY=:0
+
+sudo apt install python3-dev python3-venv build-essential
+sudo apt install libudev-dev libinput-dev libevdev-dev
+pip install evdev==1.6.1
+
+sudo nano /etc/systemd/system/scanner_inspect.service
+sudo systemctl daemon-reload
+sudo systemctl enable scanner_inspect.service
+sudo systemctl start scanner_inspect.service
+
+firefox-esr 194.233.76.38/checksheet-inspect
+
+=== MOSQUITTO ===
+create: sudo mosquitto_passwd -c /etc/mosquitto/passwd myuser
+add: sudo mosquitto_passwd /etc/mosquitto/passwd newuser
+sudo nano /etc/mosquitto/conf.d/default.conf
+
+listener 1883
+allow_anonymous false
+password_file /etc/mosquitto/passwd
+
+=== /MOSQUITTO ===
+
+=== STARTUP ===
+nano ~/.config/autostart/my_startup.desktop
+
+[Desktop Entry]
+Type=Application
+Name=Andon
+Exec=/home/orangepi/counter_inspect/startup/andon_startup.sh
+
+nano /home/orangepi/counter_inspect/startup/andon_startup.sh
+
+#!/bin/bash
+firefox-esr 194.233..76.38/checksheet-inspect &
+
+chmod +x /home/orangepi/startup_gui.sh
+
+=== /STARTUP ===
