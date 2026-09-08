@@ -13,6 +13,8 @@ readonly DOCKER_KEYRING="/etc/apt/keyrings/docker.asc"
 readonly DOCKER_SOURCES="/etc/apt/sources.list.d/docker.sources"
 readonly MOSQUITTO_CONFIG="/etc/mosquitto/conf.d/counter-inspect.conf"
 readonly MOSQUITTO_PASSWORD_FILE="/etc/mosquitto/passwd"
+readonly MOSQUITTO_SYSTEMD_DIR="/etc/systemd/system/mosquitto.service.d"
+readonly MOSQUITTO_SYSTEMD_CONFIG="$MOSQUITTO_SYSTEMD_DIR/counter-inspect.conf"
 readonly URL_DIR="/etc/kiosk"
 readonly URL_FILE="$URL_DIR/url"
 readonly XAUTHORITY_DIR="/etc/counter-inspect/xauth"
@@ -213,11 +215,32 @@ EOF
     chmod 0644 "$config_tmp"
     mv -f "$config_tmp" "$MOSQUITTO_CONFIG"
 
+    # The configured listeners use addresses created by NetworkManager and
+    # Docker. At boot, wait for both services and keep retrying if an interface
+    # is momentarily unavailable instead of exhausting systemd's start limit.
+    install -d -o root -g root -m 0755 "$MOSQUITTO_SYSTEMD_DIR"
+    cat >"$MOSQUITTO_SYSTEMD_CONFIG" <<'EOF'
+[Unit]
+Wants=docker.service network-online.target NetworkManager-wait-online.service
+After=docker.service network-online.target NetworkManager-wait-online.service
+StartLimitIntervalSec=0
+
+[Service]
+Restart=on-failure
+RestartSec=10s
+EOF
+    chmod 0644 "$MOSQUITTO_SYSTEMD_CONFIG"
+
+    systemctl daemon-reload
     systemctl enable mosquitto.service
     systemctl restart mosquitto.service
     if ! systemctl is-active --quiet mosquitto.service; then
         echo "Error: Mosquitto did not start successfully." >&2
         journalctl --no-pager -n 50 -u mosquitto.service >&2 || true
+        if [[ -r /var/log/mosquitto/mosquitto.log ]]; then
+            echo "Last Mosquitto broker log entries:" >&2
+            tail -n 50 /var/log/mosquitto/mosquitto.log >&2 || true
+        fi
         exit 1
     fi
 }
