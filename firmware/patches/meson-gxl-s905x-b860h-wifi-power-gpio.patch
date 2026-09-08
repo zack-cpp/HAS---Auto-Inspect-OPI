@@ -1,0 +1,11 @@
+--- a/meson-gxl-s905x-b860h.dts
++++ b/meson-gxl-s905x-b860h-rtl8189fs.dts
+@@ -1796,7 +1796,7 @@
+ 
+ 	sdio-pwrseq {
+ 		compatible = "mmc-pwrseq-simple";
+-		reset-gpios = <0x15 0x4c 0x01>;
++		reset-gpios = <0x15 0x55 0x01>;
+ 		clocks = <0x16>;
+ 		clock-names = "ext_clock";
+ 		phandle = <0x26>;
