@@ -15,6 +15,8 @@ readonly MOSQUITTO_CONFIG="/etc/mosquitto/conf.d/counter-inspect.conf"
 readonly MOSQUITTO_PASSWORD_FILE="/etc/mosquitto/passwd"
 readonly MOSQUITTO_SYSTEMD_DIR="/etc/systemd/system/mosquitto.service.d"
 readonly MOSQUITTO_SYSTEMD_CONFIG="$MOSQUITTO_SYSTEMD_DIR/counter-inspect.conf"
+readonly MQTT_FIREWALL_SCRIPT="/usr/local/sbin/counter-inspect-mqtt-firewall"
+readonly MQTT_FIREWALL_SERVICE="/etc/systemd/system/counter-inspect-mqtt-firewall.service"
 readonly URL_DIR="/etc/kiosk"
 readonly URL_FILE="$URL_DIR/url"
 readonly XAUTHORITY_DIR="/etc/counter-inspect/xauth"
@@ -83,6 +85,7 @@ apt-get install -y \
     curl \
     dnsmasq-base \
     git \
+    iptables \
     mosquitto \
     mosquitto-clients \
     network-manager \
@@ -157,7 +160,6 @@ EOF
 
 configure_mosquitto() {
     local config_tmp
-    local docker_gateway
     local password_tmp
     local username
 
@@ -189,40 +191,69 @@ configure_mosquitto() {
     chown root:mosquitto "$MOSQUITTO_PASSWORD_FILE"
     chmod 0640 "$MOSQUITTO_PASSWORD_FILE"
 
-    docker_gateway="$(docker network inspect bridge \
-        --format '{{(index .IPAM.Config 0).Gateway}}')"
-    if [[ -z "$docker_gateway" ]]; then
-        echo "Error: unable to determine Docker's host gateway address." >&2
-        exit 1
-    fi
-
     config_tmp="$(mktemp /etc/mosquitto/conf.d/counter-inspect.conf.tmp.XXXXXX)"
     cat >"$config_tmp" <<EOF
-# Managed by setup-kiosk.sh. Do not expose the local broker on eth0.
+# Managed by setup-kiosk.sh. The counter-inspect-mqtt-firewall service limits
+# access to loopback, Docker bridge interfaces, and eth1.
 allow_anonymous false
 password_file $MOSQUITTO_PASSWORD_FILE
 
-listener 1883 127.0.0.1
-listener 1883 $docker_gateway
+listener 1883 0.0.0.0
 EOF
-    if ip -4 address show dev eth1 2>/dev/null | grep -Fq '10.42.0.1/24'; then
-        printf '%s\n' 'listener 1883 10.42.0.1' >>"$config_tmp"
-    else
-        echo "Warning: eth1 does not currently own 10.42.0.1; its MQTT listener was not enabled." >&2
-        echo "Rerun this installer after eth1 is connected to enable that listener." >&2
-    fi
     chown root:root "$config_tmp"
     chmod 0644 "$config_tmp"
     mv -f "$config_tmp" "$MOSQUITTO_CONFIG"
 
-    # The configured listeners use addresses created by NetworkManager and
-    # Docker. At boot, wait for both services and keep retrying if an interface
-    # is momentarily unavailable instead of exhausting systemd's start limit.
+    # Listening on the IPv4 wildcard avoids startup failures while interfaces
+    # are being created. Restrict ingress independently so MQTT is never
+    # reachable through eth0 or any other unapproved host interface.
+    cat >"$MQTT_FIREWALL_SCRIPT" <<'FIREWALL_EOF'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly MQTT_CHAIN="COUNTER_MQTT"
+
+if iptables -w -N "$MQTT_CHAIN" 2>/dev/null; then
+    :
+else
+    iptables -w -F "$MQTT_CHAIN"
+fi
+
+iptables -w -A "$MQTT_CHAIN" -i lo -j ACCEPT
+iptables -w -A "$MQTT_CHAIN" -i docker0 -j ACCEPT
+iptables -w -A "$MQTT_CHAIN" -i 'br+' -j ACCEPT
+iptables -w -A "$MQTT_CHAIN" -i eth1 -j ACCEPT
+iptables -w -A "$MQTT_CHAIN" -j REJECT --reject-with tcp-reset
+
+if ! iptables -w -C INPUT -p tcp --dport 1883 -j "$MQTT_CHAIN" 2>/dev/null; then
+    iptables -w -I INPUT 1 -p tcp --dport 1883 -j "$MQTT_CHAIN"
+fi
+FIREWALL_EOF
+    chmod 0755 "$MQTT_FIREWALL_SCRIPT"
+
+    cat >"$MQTT_FIREWALL_SERVICE" <<EOF
+[Unit]
+Description=Restrict Counter Inspect MQTT broker ingress
+Wants=docker.service
+After=docker.service
+Before=mosquitto.service
+
+[Service]
+Type=oneshot
+ExecStart=$MQTT_FIREWALL_SCRIPT
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    chmod 0644 "$MQTT_FIREWALL_SERVICE"
+
     install -d -o root -g root -m 0755 "$MOSQUITTO_SYSTEMD_DIR"
     cat >"$MOSQUITTO_SYSTEMD_CONFIG" <<'EOF'
 [Unit]
-Wants=docker.service network-online.target NetworkManager-wait-online.service
-After=docker.service network-online.target NetworkManager-wait-online.service
+Requires=counter-inspect-mqtt-firewall.service
+After=counter-inspect-mqtt-firewall.service
 StartLimitIntervalSec=0
 
 [Service]
@@ -232,6 +263,8 @@ EOF
     chmod 0644 "$MOSQUITTO_SYSTEMD_CONFIG"
 
     systemctl daemon-reload
+    systemctl enable counter-inspect-mqtt-firewall.service
+    systemctl restart counter-inspect-mqtt-firewall.service
     systemctl enable mosquitto.service
     systemctl restart mosquitto.service
     if ! systemctl is-active --quiet mosquitto.service; then
