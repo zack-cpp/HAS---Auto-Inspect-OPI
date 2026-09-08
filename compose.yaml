@@ -64,7 +64,7 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${XAUTHORITY_PATH:?Set XAUTHORITY_PATH in .env}
+        source: ${XAUTHORITY_PATH:-/home/orangepi/.Xauthority}
         target: /run/xauth/Xauthority
         read_only: true
         bind:
@@ -101,27 +101,12 @@ services:
     read_only: false
     profiles:
       - tools
-    environment:
-      DISPLAY: "${DISPLAY:-:0}"
-      XAUTHORITY: /run/xauth/Xauthority
     volumes:
       - ./config:/config
       - counter_secret_key:/key
       - ./logs:/data/logs
       - ./state/queue:/data/queue
       - ./updates:/data/updates
-      - type: bind
-        source: /tmp/.X11-unix
-        target: /tmp/.X11-unix
-        read_only: true
-        bind:
-          create_host_path: false
-      - type: bind
-        source: ${XAUTHORITY_PATH:?Set XAUTHORITY_PATH in .env}
-        target: /run/xauth/Xauthority
-        read_only: true
-        bind:
-          create_host_path: false
     healthcheck:
       disable: true
 

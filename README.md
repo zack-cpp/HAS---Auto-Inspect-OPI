@@ -18,29 +18,42 @@ on local and remote brokers before starting these services.
 
 ## First deployment
 
-From a terminal inside the Orange Pi desktop session, obtain its X11 settings:
-
-```sh
-echo "$DISPLAY"
-echo "${XAUTHORITY:-$HOME/.Xauthority}"
-```
-
-Create `.env` with absolute values from that desktop session. Do not use the
-Xauthority path belonging to an unrelated root SSH session.
-
-```dotenv
-OTA_HTTP_PORT=80
-DISPLAY=:0
-XAUTHORITY_PATH=/home/orangepi/.Xauthority
-```
-
-Build and initialize the deployment. Initialization prompts for local and
-remote MQTT usernames and passwords using hidden password input.
+`counterctl` does not require a graphical session, so configuration can be
+initialized first:
 
 ```sh
 docker compose build
 docker compose run --rm counterctl init \
   --device-id HAS-AI-0003
+```
+
+Before starting `scanner-inspect`, find the display and authorization file used
+by the active graphical session. The `-auth` argument in the Xorg process is
+the most reliable source on Armbian:
+
+```sh
+ls -l /tmp/.X11-unix/
+ps -eo user,args | grep -E '[X]org|[X]wayland'
+find /run/user /run /home -maxdepth 5 -type f \
+  \( -name '.Xauthority' -o -name 'Xauthority' \) 2>/dev/null
+```
+
+Create `.env` with the matching absolute values. Do not assume
+`/home/orangepi/.Xauthority` exists, and do not create an empty file: it would
+not contain the authentication cookie. Do not use an authorization file from
+an unrelated root SSH session.
+
+```dotenv
+OTA_HTTP_PORT=80
+DISPLAY=:0
+XAUTHORITY_PATH=/run/path/reported/by/xorg
+```
+
+Initialization prompts for local and remote MQTT usernames and passwords using
+hidden password input. Validate the application configuration, then start the
+deployment:
+
+```sh
 docker compose run --rm counterctl config validate
 docker compose up -d
 docker compose ps
@@ -95,9 +108,13 @@ is needed for credentials, endpoints, device ID, scanner timing, logging level,
 timeouts, or reconnect settings. A legacy `scanner.input_device` key is accepted
 but ignored because X11 capture does not bind to a physical input device.
 
+`config validate` deliberately does not require X11, allowing initialization
+and credential recovery over SSH or on a headless system. The scanner's logs
+report X11 connection or authentication failures.
+
 Host port mappings and X11 mount settings remain Compose-level settings and
-require `docker compose up -d` after modification. To move the OTA HTTP listener
-away from port 80, change `.env`:
+require `docker compose up -d --force-recreate scanner-inspect` after
+modification. To move the OTA HTTP listener away from port 80, change `.env`:
 
 ```dotenv
 OTA_HTTP_PORT=8080

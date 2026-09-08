@@ -4,7 +4,6 @@ import argparse
 import copy
 import getpass
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -135,23 +134,6 @@ def command_config_set(args: argparse.Namespace, store: ConfigStore) -> int:
 def command_config_validate(_args: argparse.Namespace, store: ConfigStore) -> int:
     settings = store.load()
     failures: list[str] = []
-    display_name = os.environ.get("DISPLAY", "").strip()
-    xauthority_name = os.environ.get("XAUTHORITY", "").strip()
-    xauthority = Path(xauthority_name) if xauthority_name else None
-    if not display_name:
-        failures.append("DISPLAY is not configured")
-    else:
-        local_display = re.fullmatch(r"(?:localhost)?:(\d+)(?:\.\d+)?", display_name)
-        if local_display:
-            socket = Path(f"/tmp/.X11-unix/X{local_display.group(1)}")
-            if not socket.exists():
-                failures.append(f"X11 socket does not exist: {socket}")
-    if xauthority is None:
-        failures.append("XAUTHORITY is not configured")
-    elif not xauthority.is_file():
-        failures.append(f"Xauthority file does not exist: {xauthority}")
-    elif not os.access(xauthority, os.R_OK):
-        failures.append(f"Xauthority file is not readable: {xauthority}")
     for name, path in (
         ("queue directory", settings.storage.queue_dir),
         ("log directory", settings.storage.log_dir),
@@ -163,17 +145,9 @@ def command_config_validate(_args: argparse.Namespace, store: ConfigStore) -> in
             failures.append(f"{name} is not writable: {path}")
     if settings.device_id == "CHANGE-ME":
         failures.append("device_id still has its placeholder value")
-    if not failures:
-        try:
-            from Xlib.display import Display
-
-            display = Display(display_name)
-            display.close()
-        except Exception as exc:
-            failures.append(f"cannot authenticate to X11 display {display_name}: {exc}")
     if failures:
         raise ConfigError("configuration is structurally valid but deployment checks failed:\n- " + "\n- ".join(failures))
-    print("Configuration, credentials, paths, and X11 keyboard access are valid.")
+    print("Configuration, credentials, and writable data paths are valid.")
     return 0
 
 
