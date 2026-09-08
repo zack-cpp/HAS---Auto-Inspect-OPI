@@ -224,7 +224,7 @@ iptables -w -A "$MQTT_CHAIN" -i lo -j ACCEPT
 iptables -w -A "$MQTT_CHAIN" -i docker0 -j ACCEPT
 iptables -w -A "$MQTT_CHAIN" -i 'br+' -j ACCEPT
 iptables -w -A "$MQTT_CHAIN" -i eth1 -j ACCEPT
-iptables -w -A "$MQTT_CHAIN" -j REJECT --reject-with tcp-reset
+iptables -w -A "$MQTT_CHAIN" -p tcp -j REJECT --reject-with tcp-reset
 
 if ! iptables -w -C INPUT -p tcp --dport 1883 -j "$MQTT_CHAIN" 2>/dev/null; then
     iptables -w -I INPUT 1 -p tcp --dport 1883 -j "$MQTT_CHAIN"
