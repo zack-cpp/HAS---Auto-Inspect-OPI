@@ -7,9 +7,10 @@ serves the downloaded OTA files at `/updates/`.
 ## Orange Pi prerequisites
 
 - AArch64 Debian/Ubuntu-based OS
-- Docker Engine with the Compose v2 plugin
-- A running local Mosquitto broker that accepts connections from Docker's
-  bridge gateway (the default client host is `host.docker.internal`)
+- Docker Engine with the Compose v2 plugin, or use the bundled installer below
+  to install both
+- A local Mosquitto broker that accepts connections from Docker's bridge
+  gateway (installed and configured by the bundled installer below)
 - An active X11 desktop session; the scanner is treated as a keyboard emulator
 - Host TCP port 80 available, unless `OTA_HTTP_PORT` is overridden
 
@@ -18,15 +19,36 @@ on local and remote brokers before starting these services.
 
 ## Kiosk and X11 setup
 
-The bundled installer configures root autologin on tty1, starts the
+The bundled installer installs Git, Docker Engine, the Compose v2 plugin, and
+the local Mosquitto broker. Mosquitto rejects anonymous connections and is
+bound only to loopback, Docker's host gateway, and—when active—the dedicated
+`eth1` address `10.42.0.1`. It creates the `mqtt-stb` and `andon_gateway`
+accounts using hidden interactive password prompts. Enter the passwords given
+to your deployment operator; plaintext passwords are never stored in this
+repository or passed as command arguments. Existing accounts are preserved on
+subsequent installer runs.
+
+The installer clones
+`https://github.com/zack-cpp/HAS---Auto-Inspect-OPI.git` directly as
+`/root/counter_inspect/opi-app`; the clone destination gives it the `opi-app`
+name, so no extra unused repository directory is left behind.
+
+The installer also configures root autologin on tty1, starts the
 X11/Openbox/Chromium kiosk, creates a dedicated Xauthority directory, and
-updates this project's `.env` without replacing unrelated values such as
-`OTA_HTTP_PORT`. It also configures the documented `eth0` DHCP and `eth1`
+updates the cloned application's `.env` without replacing unrelated values
+such as `OTA_HTTP_PORT`. It configures the documented `eth0` DHCP and `eth1`
 shared-network connections, so review those assumptions before running it.
 
 ```sh
 sudo bash setup/setup-kiosk.sh http://192.168.100.38
 ```
+
+For a fresh machine, copy `setup-kiosk.sh` to the Orange Pi and run it from any
+directory. The clone is always written to `/root/counter_inspect/opi-app`. If
+that path is already a Git checkout, the installer preserves it and does not
+discard local changes; update it separately with `git pull --ff-only`. If the
+path exists but is not a Git checkout, the installer stops instead of
+overwriting it.
 
 The managed settings are:
 

@@ -12,3 +12,8 @@ __pycache__/
 /counter_jobsend_logger.service
 /counter_mqtt_bridge.service
 /scanner_inspect.service
+
+/firmware/b860h-rtl8189fs-deployment.md
+/firmware/b860h-rtl8189fs-wifi.md
+
+/docs/*

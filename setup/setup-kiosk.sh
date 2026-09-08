@@ -6,8 +6,13 @@ readonly DEFAULT_KIOSK_URL="http://192.168.100.38"
 readonly KIOSK_URL="${1:-$DEFAULT_KIOSK_URL}"
 readonly KIOSK_DIR="/root/counter_inspect"
 readonly KIOSK_SCRIPT="$KIOSK_DIR/kiosk.sh"
+readonly APP_REPOSITORY_URL="https://github.com/zack-cpp/HAS---Auto-Inspect-OPI.git"
 readonly APP_DIR="$KIOSK_DIR/opi-app"
 readonly APP_ENV_FILE="$APP_DIR/.env"
+readonly DOCKER_KEYRING="/etc/apt/keyrings/docker.asc"
+readonly DOCKER_SOURCES="/etc/apt/sources.list.d/docker.sources"
+readonly MOSQUITTO_CONFIG="/etc/mosquitto/conf.d/counter-inspect.conf"
+readonly MOSQUITTO_PASSWORD_FILE="/etc/mosquitto/passwd"
 readonly URL_DIR="/etc/kiosk"
 readonly URL_FILE="$URL_DIR/url"
 readonly XAUTHORITY_DIR="/etc/counter-inspect/xauth"
@@ -27,12 +32,16 @@ usage() {
     cat <<EOF
 Usage: sudo bash $0 [URL]
 
-Installs a root-autologin X11/Chromium kiosk and configures Ethernet sharing:
+Installs Docker Engine, Docker Compose, a password-protected local Mosquitto
+broker, and a root-autologin X11/Chromium kiosk. It clones the application as:
+  $APP_DIR
+
+It also configures Ethernet sharing:
   eth0: DHCP client
   eth1: shared connection at 10.42.0.1/24
 
-When $APP_DIR exists, also configures its Docker scanner to use the kiosk's
-dedicated X11 authorization directory.
+The Docker scanner is configured to use the kiosk's dedicated X11
+authorization directory.
 
 If URL is omitted, this is used:
   $DEFAULT_KIOSK_URL
@@ -64,18 +73,181 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-echo "Installing kiosk and network-sharing packages..."
+echo "Installing bootstrap, kiosk, and network-sharing packages..."
 apt-get update
 apt-get install -y \
     ca-certificates \
     chromium \
+    curl \
     dnsmasq-base \
+    git \
+    mosquitto \
+    mosquitto-clients \
     network-manager \
     openbox \
     xauth \
     x11-xserver-utils \
     xinit \
     xserver-xorg
+
+install_docker() {
+    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        echo "Docker Engine and Docker Compose are already installed."
+    else
+        # Follow Docker's official apt-repository installation method. Remove
+        # conflicting distro packages only when a working Engine + Compose
+        # installation was not detected. Docker data under /var/lib/docker is
+        # not removed by package removal.
+        for conflicting_package in \
+            docker.io \
+            docker-compose \
+            docker-compose-v2 \
+            docker-doc \
+            docker-buildx \
+            podman-docker \
+            containerd \
+            runc; do
+            apt-get remove -y "$conflicting_package" || true
+        done
+
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        docker_distribution=""
+        docker_codename="${VERSION_CODENAME:-}"
+        if [[ "${ID:-}" == "ubuntu" || " ${ID_LIKE:-} " == *" ubuntu "* ]]; then
+            docker_distribution="ubuntu"
+            docker_codename="${UBUNTU_CODENAME:-$docker_codename}"
+        elif [[ "${ID:-}" == "debian" || " ${ID_LIKE:-} " == *" debian "* ]]; then
+            docker_distribution="debian"
+        fi
+        if [[ -z "$docker_distribution" || -z "$docker_codename" ]]; then
+            echo "Error: cannot determine a supported Ubuntu/Debian Docker repository." >&2
+            exit 1
+        fi
+
+        install -d -m 0755 /etc/apt/keyrings
+        curl -fsSL "https://download.docker.com/linux/$docker_distribution/gpg" \
+            -o "$DOCKER_KEYRING"
+        chmod a+r "$DOCKER_KEYRING"
+
+        cat >"$DOCKER_SOURCES" <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/$docker_distribution
+Suites: $docker_codename
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: $DOCKER_KEYRING
+EOF
+
+        apt-get update
+        apt-get install -y \
+            containerd.io \
+            docker-buildx-plugin \
+            docker-ce \
+            docker-ce-cli \
+            docker-compose-plugin
+    fi
+
+    systemctl enable --now docker.service
+    docker --version
+    docker compose version
+}
+
+configure_mosquitto() {
+    local config_tmp
+    local docker_gateway
+    local password_tmp
+    local username
+
+    echo "Configuring the local Mosquitto broker..."
+    install -d -o root -g root -m 0755 /etc/mosquitto/conf.d
+
+    # Preserve all existing accounts. Missing managed accounts are created
+    # interactively so plaintext passwords never enter this script, a process
+    # argument, the repository, or the shell history.
+    if [[ -f "$MOSQUITTO_PASSWORD_FILE" ]]; then
+        password_tmp="$(mktemp /etc/mosquitto/passwd.tmp.XXXXXX)"
+        awk -F: 'NF >= 2 && $1 != "" { print }' \
+            "$MOSQUITTO_PASSWORD_FILE" >"$password_tmp"
+        chown root:mosquitto "$password_tmp"
+        chmod 0640 "$password_tmp"
+        mv -f "$password_tmp" "$MOSQUITTO_PASSWORD_FILE"
+    else
+        install -o root -g mosquitto -m 0640 /dev/null "$MOSQUITTO_PASSWORD_FILE"
+    fi
+
+    for username in mqtt-stb andon_gateway; do
+        if grep -Fq "${username}:" "$MOSQUITTO_PASSWORD_FILE"; then
+            echo "Mosquitto account '$username' already exists; preserving it."
+        else
+            echo "Create the password for Mosquitto account '$username'."
+            mosquitto_passwd "$MOSQUITTO_PASSWORD_FILE" "$username"
+        fi
+    done
+    chown root:mosquitto "$MOSQUITTO_PASSWORD_FILE"
+    chmod 0640 "$MOSQUITTO_PASSWORD_FILE"
+
+    docker_gateway="$(docker network inspect bridge \
+        --format '{{(index .IPAM.Config 0).Gateway}}')"
+    if [[ -z "$docker_gateway" ]]; then
+        echo "Error: unable to determine Docker's host gateway address." >&2
+        exit 1
+    fi
+
+    config_tmp="$(mktemp /etc/mosquitto/conf.d/counter-inspect.conf.tmp.XXXXXX)"
+    cat >"$config_tmp" <<EOF
+# Managed by setup-kiosk.sh. Do not expose the local broker on eth0.
+allow_anonymous false
+password_file $MOSQUITTO_PASSWORD_FILE
+
+listener 1883 127.0.0.1
+listener 1883 $docker_gateway
+EOF
+    if ip -4 address show dev eth1 2>/dev/null | grep -Fq '10.42.0.1/24'; then
+        printf '%s\n' 'listener 1883 10.42.0.1' >>"$config_tmp"
+    else
+        echo "Warning: eth1 does not currently own 10.42.0.1; its MQTT listener was not enabled." >&2
+        echo "Rerun this installer after eth1 is connected to enable that listener." >&2
+    fi
+    chown root:root "$config_tmp"
+    chmod 0644 "$config_tmp"
+    mv -f "$config_tmp" "$MOSQUITTO_CONFIG"
+
+    systemctl enable mosquitto.service
+    systemctl restart mosquitto.service
+    if ! systemctl is-active --quiet mosquitto.service; then
+        echo "Error: Mosquitto did not start successfully." >&2
+        journalctl --no-pager -n 50 -u mosquitto.service >&2 || true
+        exit 1
+    fi
+}
+
+clone_application() {
+    install -d -o root -g root -m 0755 "$KIOSK_DIR"
+
+    if [[ -d "$APP_DIR/.git" ]]; then
+        existing_origin="$(git -C "$APP_DIR" remote get-url origin 2>/dev/null || true)"
+        echo "Application repository already exists at $APP_DIR."
+        if [[ -n "$existing_origin" && "$existing_origin" != "$APP_REPOSITORY_URL" ]]; then
+            echo "Warning: existing origin is $existing_origin" >&2
+            echo "Expected origin: $APP_REPOSITORY_URL" >&2
+        fi
+        echo "Existing application files were preserved; run git pull --ff-only separately to update them."
+        return
+    fi
+
+    if [[ -e "$APP_DIR" ]]; then
+        echo "Error: $APP_DIR exists but is not a Git checkout." >&2
+        echo "Move or remove that directory, then run this installer again." >&2
+        exit 1
+    fi
+
+    echo "Cloning application repository into $APP_DIR..."
+    git clone --origin origin "$APP_REPOSITORY_URL" "$APP_DIR"
+}
+
+install_docker
+clone_application
 
 echo "Configuring eth0 as a DHCP client and eth1 as the shared connection..."
 systemctl enable --now NetworkManager.service
@@ -145,6 +317,8 @@ else
     echo "Notice: eth1 is not currently present; shared-eth1 was saved for later." >&2
 fi
 
+configure_mosquitto
+
 install -d -m 0755 "$KIOSK_DIR" "$URL_DIR" "$GETTY_DROPIN_DIR"
 install -d -o root -g root -m 0750 "$XAUTHORITY_DIR"
 install -d -o root -g root -m 1777 "$X11_SOCKET_DIR"
@@ -159,42 +333,38 @@ chmod 0644 "$X11_TMPFILES_CONFIG"
 # Keep unrelated Compose settings, such as OTA_HTTP_PORT, while replacing only
 # values owned by this kiosk installer. Mounting the directory lets the scanner
 # see a cookie file that xauth atomically replaces when X starts again.
-if [[ -d "$APP_DIR" ]]; then
-    install -d -o 10001 -g 10001 -m 2770 \
-        "$APP_DIR/config" \
-        "$APP_DIR/logs" \
-        "$APP_DIR/state/queue"
-    install -d -o 10001 -g 10001 -m 2775 "$APP_DIR/updates"
-    if [[ -f "$APP_DIR/config/credentials.enc" ]]; then
-        chown 10001:10001 "$APP_DIR/config/credentials.enc"
-        chmod 0640 "$APP_DIR/config/credentials.enc"
-    fi
+install -d -o 10001 -g 10001 -m 2770 \
+    "$APP_DIR/config" \
+    "$APP_DIR/logs" \
+    "$APP_DIR/state/queue"
+install -d -o 10001 -g 10001 -m 2775 "$APP_DIR/updates"
+if [[ -f "$APP_DIR/config/credentials.enc" ]]; then
+    chown 10001:10001 "$APP_DIR/config/credentials.enc"
+    chmod 0640 "$APP_DIR/config/credentials.enc"
+fi
 
-    env_tmp="$(mktemp "$APP_DIR/.env.tmp.XXXXXX")"
-    if [[ -f "$APP_ENV_FILE" ]]; then
-        awk -v begin="$ENV_BEGIN" -v end="$ENV_END" '
-            $0 == begin { managed = 1; next }
-            $0 == end { managed = 0; next }
-            managed { next }
-            /^(DISPLAY|XAUTHORITY_PATH|XAUTHORITY_DIR|X11_HOSTNAME)=/ { next }
-            { print }
-        ' "$APP_ENV_FILE" >"$env_tmp"
-    fi
-    if [[ -s "$env_tmp" ]]; then
-        printf '\n' >>"$env_tmp"
-    fi
-    cat >>"$env_tmp" <<ENV_EOF
+env_tmp="$(mktemp "$APP_DIR/.env.tmp.XXXXXX")"
+if [[ -f "$APP_ENV_FILE" ]]; then
+    awk -v begin="$ENV_BEGIN" -v end="$ENV_END" '
+        $0 == begin { managed = 1; next }
+        $0 == end { managed = 0; next }
+        managed { next }
+        /^(DISPLAY|XAUTHORITY_PATH|XAUTHORITY_DIR|X11_HOSTNAME)=/ { next }
+        { print }
+    ' "$APP_ENV_FILE" >"$env_tmp"
+fi
+if [[ -s "$env_tmp" ]]; then
+    printf '\n' >>"$env_tmp"
+fi
+cat >>"$env_tmp" <<ENV_EOF
 $ENV_BEGIN
 DISPLAY=:0
 XAUTHORITY_DIR=$XAUTHORITY_DIR
 X11_HOSTNAME=$X11_HOSTNAME
 $ENV_END
 ENV_EOF
-    install -o root -g root -m 0600 "$env_tmp" "$APP_ENV_FILE"
-    rm -f "$env_tmp"
-else
-    echo "Notice: $APP_DIR does not exist; Docker .env was not updated." >&2
-fi
+install -o root -g root -m 0600 "$env_tmp" "$APP_ENV_FILE"
+rm -f "$env_tmp"
 
 cat >"$URL_FILE" <<EOF
 $KIOSK_URL
@@ -300,6 +470,8 @@ cat <<EOF
 
 Kiosk setup complete.
 
+Repository: $APP_REPOSITORY_URL
+Application: $APP_DIR
 URL:      $KIOSK_URL
 Launcher: $KIOSK_SCRIPT
 Autologin: root on tty1 via getty@tty1.service
@@ -307,10 +479,18 @@ Xauthority: $XAUTHORITY_FILE
 X11 socket: $X11_SOCKET_DIR (created at boot by systemd-tmpfiles)
 Ethernet: eth0 is a DHCP client
 Sharing:  eth1 serves 10.42.0.0/24 from 10.42.0.1
+MQTT:     authenticated Mosquitto on port 1883 for localhost, Docker, and eth1
+Users:    mqtt-stb, andon_gateway
 
 Reboot to start the kiosk:
   reboot
 
 To change the URL later:
   printf '%s\n' 'https://example.com' > $URL_FILE
+
+Initialize and start the application:
+  cd $APP_DIR
+  docker compose build
+  docker compose run --rm counterctl init --device-id YOUR-DEVICE-ID
+  docker compose up -d
 EOF
