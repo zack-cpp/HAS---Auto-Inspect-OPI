@@ -28,6 +28,10 @@ services:
     <<: *python-service
     command: ["python", "-m", "counter_inspect.bridge"]
     user: "10001:10001"
+    # Rootless/user-namespaced Docker may leave the named-volume key owned by
+    # group 0. Supplementary group 0 grants read access without running as root.
+    group_add:
+      - "0"
     volumes:
       - ./config:/config:ro
       - counter_secret_key:/key:ro
@@ -38,6 +42,8 @@ services:
     <<: *python-service
     command: ["python", "-m", "counter_inspect.ota"]
     user: "10001:10001"
+    group_add:
+      - "0"
     volumes:
       - ./config:/config:ro
       - counter_secret_key:/key:ro
@@ -47,9 +53,15 @@ services:
   scanner-inspect:
     <<: *python-service
     command: ["python", "-m", "counter_inspect.scanner"]
-    # The X11 cookie remains read-only. Capabilities are dropped and the root
-    # filesystem remains read-only even though the service needs desktop access.
-    user: "0:0"
+    # The dedicated X11 cookie directory remains read-only. Mounting its
+    # directory, rather than the cookie file, allows xauth to replace the file
+    # atomically when the kiosk session restarts.
+    user: "10001:10001"
+    group_add:
+      - "0"
+    # Xauthority local-family cookies are keyed by hostname. Match the host so
+    # python-xlib can authenticate over the mounted Unix-domain socket.
+    hostname: "${X11_HOSTNAME:-armbian}"
     environment:
       DISPLAY: "${DISPLAY:-:0}"
       XAUTHORITY: /run/xauth/Xauthority
@@ -64,8 +76,8 @@ services:
         bind:
           create_host_path: false
       - type: bind
-        source: ${XAUTHORITY_PATH:-/home/orangepi/.Xauthority}
-        target: /run/xauth/Xauthority
+        source: ${XAUTHORITY_DIR:-/etc/counter-inspect/xauth}
+        target: /run/xauth
         read_only: true
         bind:
           create_host_path: false
@@ -95,8 +107,13 @@ services:
 
   counterctl:
     <<: *python-service
-    command: ["python", "-m", "counter_inspect.cli"]
+    entrypoint: ["python", "-m", "counter_inspect.cli"]
     user: "0:0"
+    # UID 0 manages the named key volume. Supplementary group 10001 grants
+    # access to the setgid host configuration and data directories when Docker
+    # user namespaces prevent container root from bypassing host permissions.
+    group_add:
+      - "10001"
     restart: "no"
     read_only: false
     profiles:

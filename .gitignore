@@ -1,5 +1,14 @@
-/.env.example
+__pycache__/
+.pytest_cache/
+*.py[cod]
+/.env
+/config/credentials.enc
+/config/runtime.yaml
+/logs/
+/state/
+/updates/*
+!/updates/.gitkeep
+
 /counter_jobsend_logger.service
 /counter_mqtt_bridge.service
-/logs
 /scanner_inspect.service

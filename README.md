@@ -16,6 +16,31 @@ serves the downloaded OTA files at `/updates/`.
 The credential CLI configures MQTT **clients only**. Create the matching users
 on local and remote brokers before starting these services.
 
+## Kiosk and X11 setup
+
+The bundled installer configures root autologin on tty1, starts the
+X11/Openbox/Chromium kiosk, creates a dedicated Xauthority directory, and
+updates this project's `.env` without replacing unrelated values such as
+`OTA_HTTP_PORT`. It also configures the documented `eth0` DHCP and `eth1`
+shared-network connections, so review those assumptions before running it.
+
+```sh
+sudo bash setup/setup-kiosk.sh http://192.168.100.38
+```
+
+The managed settings are:
+
+```dotenv
+DISPLAY=:0
+XAUTHORITY_DIR=/etc/counter-inspect/xauth
+X11_HOSTNAME=armbian
+```
+
+The directory is created during installation, so Docker can create the scanner
+container before X starts. Once `startx` creates or rotates `Xauthority`, the
+running scanner reconnects without a container restart. Reboot after the first
+kiosk installation to activate tty1 autologin and X11.
+
 ## First deployment
 
 `counterctl` does not require a graphical session, so configuration can be
@@ -27,26 +52,15 @@ docker compose run --rm counterctl init \
   --device-id HAS-AI-0003
 ```
 
-Before starting `scanner-inspect`, find the display and authorization file used
-by the active graphical session. The `-auth` argument in the Xorg process is
-the most reliable source on Armbian:
-
-```sh
-ls -l /tmp/.X11-unix/
-ps -eo user,args | grep -E '[X]org|[X]wayland'
-find /run/user /run /home -maxdepth 5 -type f \
-  \( -name '.Xauthority' -o -name 'Xauthority' \) 2>/dev/null
-```
-
-Create `.env` with the matching absolute values. Do not assume
-`/home/orangepi/.Xauthority` exists, and do not create an empty file: it would
-not contain the authentication cookie. Do not use an authorization file from
-an unrelated root SSH session.
+If the kiosk installer has not been run, create `.env` and arrange for your X11
+startup to place its real cookie at `$XAUTHORITY_DIR/Xauthority`. Do not create
+an empty cookie file; it would not authenticate to X11.
 
 ```dotenv
 OTA_HTTP_PORT=80
 DISPLAY=:0
-XAUTHORITY_PATH=/run/path/reported/by/xorg
+XAUTHORITY_DIR=/etc/counter-inspect/xauth
+X11_HOSTNAME=armbian
 ```
 
 Initialization prompts for local and remote MQTT usernames and passwords using
@@ -78,6 +92,10 @@ sudo systemctl enable --now docker
 ```
 
 ## Configuration and credential rotation
+
+For the complete command reference, validation rules, live-reload behavior,
+common workflows, and troubleshooting, see the
+[`counterctl` operator guide](docs/counterctl.md).
 
 Show the effective configuration; passwords are always redacted:
 
