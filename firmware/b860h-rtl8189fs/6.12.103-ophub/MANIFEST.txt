@@ -1,0 +1,21 @@
+Bundle format: 1
+Created: 2026-09-08 Asia/Jakarta
+Reference host: opiHAS-AI-STB-1
+Board model: ZTE B860H
+Device-tree compatible: zte,b860h
+Architecture: arm64/aarch64
+SDIO ID: 024C:F179
+Radio: Realtek RTL8189FTV/RTL8189FS
+Kernel release: 6.12.103-ophub
+Kernel build: #1 SMP PREEMPT_DYNAMIC Sat Aug 15 07:45:08 UTC 2026
+Kernel image SHA-256: 9d3021819a895e3487627a0bc536744c75fde6470318aef782f7d56743ef000b
+Stock DTB path: /boot/dtb/amlogic/meson-gxl-s905x-b860h.dtb
+Stock DTB SHA-256: 3de0713a52f63651338a4b4416701e5f9b583453acb8cbff74427ce743757515
+Custom DTB SHA-256: 573e49be5d591f14eb5004c129c431c5e36cc78cca80713693ac47ef1248c5be
+Module SHA-256: 319eb4b18a449812e53e4188779d4bf6da1a78c1e465930505261878267b64f7
+Module version: v5.7.9_35795.20191128
+Module vermagic: 6.12.103-ophub SMP preempt mod_unload aarch64
+Driver repository: https://github.com/jwrdegoede/rtl8189ES_linux.git
+Driver branch: rtl8189fs
+Driver commit: a5ad16ed1d64fe1facce95bbcc2360c8c846a681
+Compatibility patch: rtl8189fs-linux-6.12-monitor-channel.patch
