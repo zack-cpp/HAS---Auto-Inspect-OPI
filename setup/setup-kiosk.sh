@@ -19,6 +19,10 @@ readonly MQTT_FIREWALL_SCRIPT="/usr/local/sbin/counter-inspect-mqtt-firewall"
 readonly MQTT_FIREWALL_SERVICE="/etc/systemd/system/counter-inspect-mqtt-firewall.service"
 readonly URL_DIR="/etc/kiosk"
 readonly URL_FILE="$URL_DIR/url"
+readonly KIOSK_RESTART_REQUEST="$URL_DIR/restart-request"
+readonly KIOSK_RESTART_READY="$URL_DIR/restart-via-systemd"
+readonly KIOSK_RESTART_SERVICE="/etc/systemd/system/counter-inspect-kiosk-restart.service"
+readonly KIOSK_RESTART_PATH="/etc/systemd/system/counter-inspect-kiosk-restart.path"
 readonly XAUTHORITY_DIR="/etc/counter-inspect/xauth"
 readonly XAUTHORITY_FILE="$XAUTHORITY_DIR/Xauthority"
 readonly X11_HOSTNAME="$(hostname -s)"
@@ -429,6 +433,38 @@ $KIOSK_URL
 EOF
 chmod 0644 "$URL_FILE"
 
+# counterctl runs in a container and receives access only to URL_DIR. A host
+# systemd path unit turns its narrow restart-request file into a kiosk restart,
+# avoiding Docker-socket access or host namespace privileges in the container.
+cat >"$KIOSK_RESTART_SERVICE" <<EOF
+[Unit]
+Description=Apply a Counter Inspect kiosk restart request
+ConditionPathExists=$KIOSK_RESTART_REQUEST
+
+[Service]
+Type=oneshot
+ExecStart=/bin/rm -f $KIOSK_RESTART_REQUEST
+ExecStart=/usr/bin/systemctl --no-block restart getty@tty1.service
+EOF
+chmod 0644 "$KIOSK_RESTART_SERVICE"
+
+cat >"$KIOSK_RESTART_PATH" <<EOF
+[Unit]
+Description=Watch for Counter Inspect kiosk restart requests
+
+[Path]
+PathExists=$KIOSK_RESTART_REQUEST
+Unit=counter-inspect-kiosk-restart.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 "$KIOSK_RESTART_PATH"
+
+# Never interpret a request left by an incomplete installation as an operator
+# action. Future requests are created explicitly by counterctl.
+rm -f "$KIOSK_RESTART_REQUEST"
+
 cat >"$KIOSK_SCRIPT" <<'KIOSK_EOF'
 #!/usr/bin/env bash
 
@@ -608,6 +644,9 @@ install -o root -g root -m 0644 "$profile_tmp" "$PROFILE_FILE"
 
 systemctl daemon-reload
 systemctl enable getty@tty1.service
+systemctl enable --now counter-inspect-kiosk-restart.path
+touch "$KIOSK_RESTART_READY"
+chmod 0644 "$KIOSK_RESTART_READY"
 
 if systemctl is-enabled display-manager.service >/dev/null 2>&1; then
     echo "Warning: a display manager is enabled and may conflict with startx on tty1." >&2
@@ -633,7 +672,8 @@ Reboot to start the kiosk:
   reboot
 
 To change the URL later:
-  printf '%s\n' 'https://example.com' > $URL_FILE
+  cd $APP_DIR
+  docker compose run --rm counterctl kiosk set https://example.com --restart
 
 Initialize and start the application:
   cd $APP_DIR

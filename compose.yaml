@@ -118,12 +118,21 @@ services:
     read_only: false
     profiles:
       - tools
+    environment:
+      COUNTER_KIOSK_DIR: /host/kiosk
     volumes:
       - ./config:/config
       - counter_secret_key:/key
       - ./logs:/data/logs
       - ./state/queue:/data/queue
       - ./updates:/data/updates
+      # This narrow host bind lets the CLI manage the existing kiosk URL and
+      # signal the host-side systemd path unit installed by setup-kiosk.sh.
+      - type: bind
+        source: /etc/kiosk
+        target: /host/kiosk
+        bind:
+          create_host_path: false
     healthcheck:
       disable: true
 

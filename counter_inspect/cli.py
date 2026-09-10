@@ -7,6 +7,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -23,6 +24,10 @@ from .config import (
 
 DATA_UID = 10001
 DATA_GID = 10001
+KIOSK_DIR = Path(os.environ.get("COUNTER_KIOSK_DIR", "/host/kiosk"))
+KIOSK_URL_PATH = KIOSK_DIR / "url"
+KIOSK_RESTART_REQUEST_PATH = KIOSK_DIR / "restart-request"
+KIOSK_RESTART_READY_PATH = KIOSK_DIR / "restart-via-systemd"
 
 
 def _ensure_directory(path: Path, mode: int = 0o750) -> None:
@@ -160,6 +165,88 @@ def command_credentials_set(args: argparse.Namespace, store: ConfigStore) -> int
     return 0
 
 
+def _validate_kiosk_url(value: str) -> str:
+    url = value.strip()
+    if not url:
+        raise ConfigError("kiosk URL cannot be empty")
+    if any(character.isspace() or ord(character) < 32 for character in url):
+        raise ConfigError("kiosk URL cannot contain whitespace or control characters")
+
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        # Accessing port makes urllib validate malformed or out-of-range ports.
+        parsed.port
+    except ValueError as exc:
+        raise ConfigError(f"kiosk URL is invalid: {exc}") from exc
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or hostname is None:
+        raise ConfigError("kiosk URL must be an absolute http:// or https:// URL")
+    return url
+
+
+def _read_kiosk_url() -> str:
+    try:
+        value = KIOSK_URL_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ConfigError(
+            f"kiosk URL file not found: {KIOSK_URL_PATH}; run setup/setup-kiosk.sh on the host first"
+        ) from exc
+    except OSError as exc:
+        raise ConfigError(f"cannot read kiosk URL file {KIOSK_URL_PATH}: {exc}") from exc
+    return _validate_kiosk_url(value)
+
+
+def _request_kiosk_restart() -> None:
+    if not KIOSK_DIR.is_dir():
+        raise ConfigError(
+            f"kiosk configuration directory not found: {KIOSK_DIR}; run setup/setup-kiosk.sh on the host first"
+        )
+    if not KIOSK_RESTART_READY_PATH.is_file():
+        raise ConfigError(
+            "host kiosk restart support is not installed; rerun setup/setup-kiosk.sh with the current URL"
+        )
+    try:
+        # Replacing an old, unconsumed request makes a subsequent request
+        # observable to the host systemd path unit as a fresh file creation.
+        KIOSK_RESTART_REQUEST_PATH.unlink(missing_ok=True)
+        atomic_write(KIOSK_RESTART_REQUEST_PATH, b"restart\n", mode=0o644)
+    except OSError as exc:
+        raise ConfigError(f"cannot request kiosk restart: {exc}") from exc
+
+
+def command_kiosk_show(_args: argparse.Namespace, _store: ConfigStore) -> int:
+    print(_read_kiosk_url())
+    return 0
+
+
+def command_kiosk_set(args: argparse.Namespace, _store: ConfigStore) -> int:
+    url = _validate_kiosk_url(args.url)
+    if not KIOSK_DIR.is_dir():
+        raise ConfigError(
+            f"kiosk configuration directory not found: {KIOSK_DIR}; run setup/setup-kiosk.sh on the host first"
+        )
+    try:
+        atomic_write(KIOSK_URL_PATH, f"{url}\n".encode("utf-8"), mode=0o644)
+    except OSError as exc:
+        raise ConfigError(f"cannot update kiosk URL file {KIOSK_URL_PATH}: {exc}") from exc
+
+    print(f"Updated kiosk URL to {url}.")
+    if args.restart:
+        _request_kiosk_restart()
+        print("Requested a kiosk restart; Docker application services remain running.")
+    else:
+        print("Run 'counterctl kiosk restart' to apply it to the current Chromium session.")
+    return 0
+
+
+def command_kiosk_restart(_args: argparse.Namespace, _store: ConfigStore) -> int:
+    # Refuse to restart a kiosk whose URL is absent or malformed.
+    _read_kiosk_url()
+    _request_kiosk_restart()
+    print("Requested a kiosk restart; Docker application services remain running.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="counterctl", description="Manage Counter Inspect configuration")
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -189,6 +276,21 @@ def build_parser() -> argparse.ArgumentParser:
     credential_set = credential_commands.add_parser("set", help="set client credentials for a broker")
     credential_set.add_argument("broker", choices=("local", "remote"))
     credential_set.set_defaults(handler=command_credentials_set)
+
+    kiosk_parser = subcommands.add_parser("kiosk", help="view, update, and restart the host kiosk")
+    kiosk_commands = kiosk_parser.add_subparsers(dest="kiosk_command", required=True)
+    kiosk_show = kiosk_commands.add_parser("show", help="show the current kiosk URL")
+    kiosk_show.set_defaults(handler=command_kiosk_show)
+    kiosk_set = kiosk_commands.add_parser("set", help="atomically update the kiosk URL")
+    kiosk_set.add_argument("url", help="absolute http:// or https:// kiosk URL")
+    kiosk_set.add_argument(
+        "--restart",
+        action="store_true",
+        help="request a kiosk restart immediately after updating the URL",
+    )
+    kiosk_set.set_defaults(handler=command_kiosk_set)
+    kiosk_restart = kiosk_commands.add_parser("restart", help="restart X11 and Chromium through the host")
+    kiosk_restart.set_defaults(handler=command_kiosk_restart)
     return parser
 
 

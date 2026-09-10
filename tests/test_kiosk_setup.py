@@ -26,6 +26,17 @@ def _extract_kiosk_launcher() -> str:
     return "\n".join(lines[start:end]) + "\n"
 
 
+def test_installer_adds_narrow_counterctl_kiosk_restart_bridge():
+    installer = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'readonly KIOSK_RESTART_REQUEST="$URL_DIR/restart-request"' in installer
+    assert "PathExists=$KIOSK_RESTART_REQUEST" in installer
+    assert "ExecStart=/bin/rm -f $KIOSK_RESTART_REQUEST" in installer
+    assert "ExecStart=/usr/bin/systemctl --no-block restart getty@tty1.service" in installer
+    assert "systemctl enable --now counter-inspect-kiosk-restart.path" in installer
+    assert 'touch "$KIOSK_RESTART_READY"' in installer
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
     path.chmod(0o755)
