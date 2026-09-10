@@ -90,6 +90,7 @@ apt-get install -y \
     mosquitto-clients \
     network-manager \
     openbox \
+    procps \
     xauth \
     x11-xserver-utils \
     xinit \
@@ -434,7 +435,74 @@ cat >"$KIOSK_SCRIPT" <<'KIOSK_EOF'
 set -Eeuo pipefail
 
 readonly URL_FILE="/etc/kiosk/url"
-readonly CHROMIUM_RUNTIME_DIR="/run/counter-inspect/chromium"
+readonly CHROMIUM_PROFILE_DIR="/root/.config/chromium"
+readonly DISPLAY_POLL_SECONDS="2"
+
+chromium_profile_in_use() {
+    local command_line
+
+    while IFS= read -r command_line; do
+        # A Chromium process without --user-data-dir uses the default profile,
+        # which is CHROMIUM_PROFILE_DIR for this root kiosk. A process with a
+        # different explicit profile does not block this kiosk profile.
+        if [[ "$command_line" == *"--user-data-dir=$CHROMIUM_PROFILE_DIR"* ]]; then
+            return 0
+        fi
+        if [[ "$command_line" != *"--user-data-dir="* ]]; then
+            return 0
+        fi
+    done < <(pgrep -a -u "$(id -u)" -f '(^|/)(chromium|chromium-browser)( |$)' || true)
+
+    return 1
+}
+
+configure_connected_display() {
+    local output
+
+    output="$(xrandr --query 2>/dev/null | awk '$2 == "connected" { print $1; exit }' || true)"
+    if [[ -z "$output" ]]; then
+        return 0
+    fi
+
+    if xrandr \
+        --output "$output" \
+        --preferred \
+        --primary \
+        --pos 0x0 \
+        --rotate normal \
+        --scale 1x1; then
+        echo "Configured display $output using its preferred mode."
+    else
+        echo "Warning: could not configure display $output; retrying shortly." >&2
+        return 1
+    fi
+}
+
+watch_displays() {
+    local current_state
+    local previous_state=""
+
+    while :; do
+        current_state="$(xrandr --query 2>/dev/null || true)"
+        if [[ "$current_state" != "$previous_state" ]]; then
+            if configure_connected_display; then
+                previous_state="$current_state"
+            else
+                # Leave the prior state unmatched so a transient failure is
+                # retried on the next polling interval.
+                previous_state=""
+            fi
+        fi
+        sleep "$DISPLAY_POLL_SECONDS"
+    done
+}
+
+stop_display_watcher() {
+    if [[ -n "${DISPLAY_WATCHER_PID:-}" ]]; then
+        kill "$DISPLAY_WATCHER_PID" 2>/dev/null || true
+        wait "$DISPLAY_WATCHER_PID" 2>/dev/null || true
+    fi
+}
 
 if [[ ! -r "$URL_FILE" ]]; then
     echo "Kiosk URL file is missing: $URL_FILE" >&2
@@ -468,6 +536,11 @@ xset s noblank || true
 xset dpms 0 0 0 || true
 xset -dpms || true
 
+watch_displays &
+DISPLAY_WATCHER_PID=$!
+readonly DISPLAY_WATCHER_PID
+trap stop_display_watcher EXIT
+
 sleep 2
 
 if command -v chromium >/dev/null 2>&1; then
@@ -479,13 +552,21 @@ else
     exit 1
 fi
 
-# Never reuse Chromium's persistent default profile. Each kiosk launch gets a
-# new profile under /run, which is cleared by Linux during every boot. This
-# prevents an unclean power loss from leaving a stale SingletonLock behind.
-install -d -o root -g root -m 0700 "$CHROMIUM_RUNTIME_DIR"
-readonly CHROMIUM_PROFILE_DIR="$(mktemp -d "$CHROMIUM_RUNTIME_DIR/profile.XXXXXX")"
+# Keep cookies, saved logins, local storage, and other browser state in the
+# persistent default profile. Remove only singleton artifacts after confirming
+# that no live Chromium process is using this profile. These files may remain
+# after an unclean power loss and otherwise trigger the profile-lock dialog.
+install -d -o root -g root -m 0700 "$CHROMIUM_PROFILE_DIR"
+if chromium_profile_in_use; then
+    echo "Error: Chromium profile is already in use: $CHROMIUM_PROFILE_DIR" >&2
+    exit 1
+fi
+rm -f -- \
+    "$CHROMIUM_PROFILE_DIR/SingletonLock" \
+    "$CHROMIUM_PROFILE_DIR/SingletonSocket" \
+    "$CHROMIUM_PROFILE_DIR/SingletonCookie"
 
-exec "$CHROMIUM_BIN" \
+"$CHROMIUM_BIN" \
     --no-sandbox \
     --kiosk \
     --user-data-dir="$CHROMIUM_PROFILE_DIR" \
