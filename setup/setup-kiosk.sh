@@ -431,9 +431,10 @@ chmod 0644 "$URL_FILE"
 cat >"$KIOSK_SCRIPT" <<'KIOSK_EOF'
 #!/usr/bin/env bash
 
-set -u
+set -Eeuo pipefail
 
 readonly URL_FILE="/etc/kiosk/url"
+readonly CHROMIUM_RUNTIME_DIR="/run/counter-inspect/chromium"
 
 if [[ ! -r "$URL_FILE" ]]; then
     echo "Kiosk URL file is missing: $URL_FILE" >&2
@@ -478,10 +479,18 @@ else
     exit 1
 fi
 
+# Never reuse Chromium's persistent default profile. Each kiosk launch gets a
+# new profile under /run, which is cleared by Linux during every boot. This
+# prevents an unclean power loss from leaving a stale SingletonLock behind.
+install -d -o root -g root -m 0700 "$CHROMIUM_RUNTIME_DIR"
+readonly CHROMIUM_PROFILE_DIR="$(mktemp -d "$CHROMIUM_RUNTIME_DIR/profile.XXXXXX")"
+
 exec "$CHROMIUM_BIN" \
     --no-sandbox \
     --kiosk \
+    --user-data-dir="$CHROMIUM_PROFILE_DIR" \
     --no-first-run \
+    --no-default-browser-check \
     --disable-session-crashed-bubble \
     --disable-infobars \
     "$KIOSK_URL"
