@@ -386,9 +386,9 @@ d $X11_SOCKET_DIR 1777 root root -
 EOF
 chmod 0644 "$X11_TMPFILES_CONFIG"
 
-# Keep unrelated Compose settings, such as OTA_HTTP_PORT, while replacing only
-# values owned by this kiosk installer. Mounting the directory lets the scanner
-# see a cookie file that xauth atomically replaces when X starts again.
+# Keep unrelated Compose settings while replacing values owned by this kiosk
+# installer. Mounting the Xauthority directory lets the scanner see a cookie
+# file that xauth atomically replaces when X starts again.
 install -d -o 10001 -g 10001 -m 2770 \
     "$APP_DIR/config" \
     "$APP_DIR/logs" \
@@ -405,7 +405,7 @@ if [[ -f "$APP_ENV_FILE" ]]; then
         $0 == begin { managed = 1; next }
         $0 == end { managed = 0; next }
         managed { next }
-        /^(DISPLAY|XAUTHORITY_PATH|XAUTHORITY_DIR|X11_HOSTNAME)=/ { next }
+        /^(OTA_HTTP_PORT|DISPLAY|XAUTHORITY_PATH|XAUTHORITY_DIR|X11_HOSTNAME)=/ { next }
         { print }
     ' "$APP_ENV_FILE" >"$env_tmp"
 fi
@@ -414,6 +414,7 @@ if [[ -s "$env_tmp" ]]; then
 fi
 cat >>"$env_tmp" <<ENV_EOF
 $ENV_BEGIN
+OTA_HTTP_PORT=80
 DISPLAY=:0
 XAUTHORITY_DIR=$XAUTHORITY_DIR
 X11_HOSTNAME=$X11_HOSTNAME
