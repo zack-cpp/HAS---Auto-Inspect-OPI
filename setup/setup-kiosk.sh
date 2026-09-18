@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 readonly DEFAULT_KIOSK_URL="http://192.168.100.38"
 readonly KIOSK_URL="${1:-$DEFAULT_KIOSK_URL}"
+readonly KIOSK_BROWSER="${COUNTER_KIOSK_BROWSER:-chromium}"
+readonly LOW_MEMORY_MODE="${COUNTER_KIOSK_LOW_MEMORY:-0}"
 readonly KIOSK_DIR="/root/counter_inspect"
 readonly KIOSK_SCRIPT="$KIOSK_DIR/kiosk.sh"
 readonly APP_REPOSITORY_URL="https://github.com/zack-cpp/HAS---Auto-Inspect-OPI.git"
@@ -19,6 +21,7 @@ readonly MQTT_FIREWALL_SCRIPT="/usr/local/sbin/counter-inspect-mqtt-firewall"
 readonly MQTT_FIREWALL_SERVICE="/etc/systemd/system/counter-inspect-mqtt-firewall.service"
 readonly URL_DIR="/etc/kiosk"
 readonly URL_FILE="$URL_DIR/url"
+readonly BROWSER_FILE="$URL_DIR/browser"
 readonly KIOSK_RESTART_REQUEST="$URL_DIR/restart-request"
 readonly KIOSK_RESTART_READY="$URL_DIR/restart-via-systemd"
 readonly KIOSK_RESTART_SERVICE="/etc/systemd/system/counter-inspect-kiosk-restart.service"
@@ -35,13 +38,15 @@ readonly PROFILE_BEGIN="# BEGIN managed kiosk startup"
 readonly PROFILE_END="# END managed kiosk startup"
 readonly ENV_BEGIN="# BEGIN managed kiosk X11"
 readonly ENV_END="# END managed kiosk X11"
+readonly LOW_MEMORY_SYSCTL="/etc/sysctl.d/90-counter-inspect-low-memory.conf"
+readonly ZRAM_CONFIG="/etc/default/zramswap"
 
 usage() {
     cat <<EOF
 Usage: sudo bash $0 [URL]
 
 Installs Docker Engine, Docker Compose, a password-protected local Mosquitto
-broker, and a root-autologin X11/Chromium kiosk. It clones the application as:
+broker, and a root-autologin X11/$KIOSK_BROWSER kiosk. It clones the application as:
   $APP_DIR
 
 It also configures Ethernet sharing:
@@ -66,6 +71,22 @@ if (( EUID != 0 )); then
     exit 1
 fi
 
+case "$KIOSK_BROWSER" in
+    chromium|surf) ;;
+    *)
+        echo "Error: unsupported kiosk browser: $KIOSK_BROWSER" >&2
+        exit 2
+        ;;
+esac
+
+case "$LOW_MEMORY_MODE" in
+    0|1) ;;
+    *)
+        echo "Error: COUNTER_KIOSK_LOW_MEMORY must be 0 or 1." >&2
+        exit 2
+        ;;
+esac
+
 case "$KIOSK_URL" in
     http://*|https://*) ;;
     *)
@@ -83,22 +104,71 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "Installing bootstrap, kiosk, and network-sharing packages..."
 apt-get update
-apt-get install -y \
-    ca-certificates \
-    chromium \
-    curl \
-    dnsmasq-base \
-    git \
-    iptables \
-    mosquitto \
-    mosquitto-clients \
-    network-manager \
-    openbox \
-    procps \
-    xauth \
-    x11-xserver-utils \
-    xinit \
+if [[ "$KIOSK_BROWSER" == "surf" ]] && ! apt-cache show surf >/dev/null 2>&1; then
+    # Surf is in Ubuntu's universe component. Minimal Noble server images may
+    # not enable it by default.
+    apt-get install -y software-properties-common
+    add-apt-repository -y universe
+    apt-get update
+fi
+
+packages=(
+    ca-certificates
+    curl
+    dnsmasq-base
+    git
+    iptables
+    mosquitto
+    mosquitto-clients
+    network-manager
+    openbox
+    procps
+    xauth
+    x11-xserver-utils
+    xinit
     xserver-xorg
+)
+
+if [[ "$KIOSK_BROWSER" == "surf" ]]; then
+    packages+=(surf)
+else
+    packages+=(chromium)
+fi
+if [[ "$LOW_MEMORY_MODE" == "1" ]]; then
+    packages+=(kmod zram-tools)
+fi
+apt-get install -y "${packages[@]}"
+
+configure_low_memory() {
+    if [[ "$LOW_MEMORY_MODE" != "1" ]]; then
+        return
+    fi
+
+    # Use compressed RAM instead of adding write-heavy swap on the SD card.
+    # At PERCENT=50 a 1 GiB board gets a 512 MiB zram swap device.
+    cat >"$ZRAM_CONFIG" <<'ZRAM_EOF'
+ALGO=lz4
+PERCENT=50
+PRIORITY=100
+ZRAM_EOF
+    chmod 0644 "$ZRAM_CONFIG"
+
+    cat >"$LOW_MEMORY_SYSCTL" <<'SYSCTL_EOF'
+# Prefer the compressed zram device before memory pressure kills the kiosk.
+vm.swappiness=100
+vm.page-cluster=0
+SYSCTL_EOF
+    chmod 0644 "$LOW_MEMORY_SYSCTL"
+    sysctl --load="$LOW_MEMORY_SYSCTL"
+
+    if modprobe zram >/dev/null 2>&1 && systemctl restart zramswap.service; then
+        echo "Enabled compressed zram swap for the low-memory kiosk."
+    else
+        echo "Warning: zram could not be enabled; check kernel support before production use." >&2
+    fi
+}
+
+configure_low_memory
 
 install_docker() {
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -432,6 +502,8 @@ cat >"$URL_FILE" <<EOF
 $KIOSK_URL
 EOF
 chmod 0644 "$URL_FILE"
+printf '%s\n' "$KIOSK_BROWSER" >"$BROWSER_FILE"
+chmod 0644 "$BROWSER_FILE"
 
 # counterctl runs in a container and receives access only to URL_DIR. A host
 # systemd path unit turns its narrow restart-request file into a kiosk restart,
@@ -471,7 +543,10 @@ cat >"$KIOSK_SCRIPT" <<'KIOSK_EOF'
 set -Eeuo pipefail
 
 readonly URL_FILE="/etc/kiosk/url"
+readonly BROWSER_FILE="/etc/kiosk/browser"
 readonly CHROMIUM_PROFILE_DIR="/root/.config/chromium"
+readonly SURF_PROFILE_DIR="/root/.surf"
+readonly SURF_COOKIE_FILE="$SURF_PROFILE_DIR/cookies.txt"
 readonly DISPLAY_POLL_SECONDS="2"
 
 chromium_profile_in_use() {
@@ -490,6 +565,10 @@ chromium_profile_in_use() {
     done < <(pgrep -a -u "$(id -u)" -f '(^|/)(chromium|chromium-browser)( |$)' || true)
 
     return 1
+}
+
+surf_profile_in_use() {
+    pgrep -a -u "$(id -u)" -f '(^|/)surf( |$)' >/dev/null 2>&1
 }
 
 configure_connected_display() {
@@ -551,6 +630,18 @@ if [[ -z "$KIOSK_URL" ]]; then
     exit 1
 fi
 
+KIOSK_BROWSER="chromium"
+if [[ -r "$BROWSER_FILE" ]]; then
+    KIOSK_BROWSER="$(tr -d '\r\n' <"$BROWSER_FILE")"
+fi
+case "$KIOSK_BROWSER" in
+    chromium|surf) ;;
+    *)
+        echo "Unsupported kiosk browser in $BROWSER_FILE: $KIOSK_BROWSER" >&2
+        exit 1
+        ;;
+esac
+
 # Allow the non-root scanner container (supplementary group 0) to read the
 # current X11 cookie without making it world-readable.
 if [[ -n "${XAUTHORITY:-}" ]] && [[ -f "$XAUTHORITY" ]]; then
@@ -579,38 +670,65 @@ trap stop_display_watcher EXIT
 
 sleep 2
 
-if command -v chromium >/dev/null 2>&1; then
-    CHROMIUM_BIN="$(command -v chromium)"
-elif command -v chromium-browser >/dev/null 2>&1; then
-    CHROMIUM_BIN="$(command -v chromium-browser)"
+if [[ "$KIOSK_BROWSER" == "surf" ]]; then
+    if ! command -v surf >/dev/null 2>&1; then
+        echo "Surf executable was not found." >&2
+        exit 1
+    fi
+    if surf_profile_in_use; then
+        echo "Error: a Surf kiosk process is already running." >&2
+        exit 1
+    fi
+
+    # Surf and WebKitGTK keep website data under this persistent directory.
+    # The explicit cookie jar preserves authenticated sessions across reboot.
+    install -d -o root -g root -m 0700 "$SURF_PROFILE_DIR"
+    touch "$SURF_COOKIE_FILE"
+    chmod 0600 "$SURF_COOKIE_FILE"
+    surf \
+        -F \
+        -K \
+        -S \
+        -I \
+        -D \
+        -T \
+        -a '@Aa' \
+        -c "$SURF_COOKIE_FILE" \
+        -- \
+        "$KIOSK_URL"
 else
-    echo "Chromium executable was not found." >&2
-    exit 1
-fi
+    if command -v chromium >/dev/null 2>&1; then
+        CHROMIUM_BIN="$(command -v chromium)"
+    elif command -v chromium-browser >/dev/null 2>&1; then
+        CHROMIUM_BIN="$(command -v chromium-browser)"
+    else
+        echo "Chromium executable was not found." >&2
+        exit 1
+    fi
 
-# Keep cookies, saved logins, local storage, and other browser state in the
-# persistent default profile. Remove only singleton artifacts after confirming
-# that no live Chromium process is using this profile. These files may remain
-# after an unclean power loss and otherwise trigger the profile-lock dialog.
-install -d -o root -g root -m 0700 "$CHROMIUM_PROFILE_DIR"
-if chromium_profile_in_use; then
-    echo "Error: Chromium profile is already in use: $CHROMIUM_PROFILE_DIR" >&2
-    exit 1
-fi
-rm -f -- \
-    "$CHROMIUM_PROFILE_DIR/SingletonLock" \
-    "$CHROMIUM_PROFILE_DIR/SingletonSocket" \
-    "$CHROMIUM_PROFILE_DIR/SingletonCookie"
+    # Keep cookies, saved logins, local storage, and other browser state in the
+    # persistent default profile. Remove only singleton artifacts after
+    # confirming that no live Chromium process is using this profile.
+    install -d -o root -g root -m 0700 "$CHROMIUM_PROFILE_DIR"
+    if chromium_profile_in_use; then
+        echo "Error: Chromium profile is already in use: $CHROMIUM_PROFILE_DIR" >&2
+        exit 1
+    fi
+    rm -f -- \
+        "$CHROMIUM_PROFILE_DIR/SingletonLock" \
+        "$CHROMIUM_PROFILE_DIR/SingletonSocket" \
+        "$CHROMIUM_PROFILE_DIR/SingletonCookie"
 
-"$CHROMIUM_BIN" \
-    --no-sandbox \
-    --kiosk \
-    --user-data-dir="$CHROMIUM_PROFILE_DIR" \
-    --no-first-run \
-    --no-default-browser-check \
-    --disable-session-crashed-bubble \
-    --disable-infobars \
-    "$KIOSK_URL"
+    "$CHROMIUM_BIN" \
+        --no-sandbox \
+        --kiosk \
+        --user-data-dir="$CHROMIUM_PROFILE_DIR" \
+        --no-first-run \
+        --no-default-browser-check \
+        --disable-session-crashed-bubble \
+        --disable-infobars \
+        "$KIOSK_URL"
+fi
 KIOSK_EOF
 chmod 0755 "$KIOSK_SCRIPT"
 
@@ -659,6 +777,7 @@ Kiosk setup complete.
 Repository: $APP_REPOSITORY_URL
 Application: $APP_DIR
 URL:      $KIOSK_URL
+Browser:  $KIOSK_BROWSER
 Launcher: $KIOSK_SCRIPT
 Autologin: root on tty1 via getty@tty1.service
 Xauthority: $XAUTHORITY_FILE
@@ -667,6 +786,7 @@ Ethernet: eth0 is a DHCP client
 Sharing:  eth1 serves 10.42.0.0/24 from 10.42.0.1
 MQTT:     authenticated Mosquitto on port 1883 for localhost, Docker, and eth1
 Users:    mqtt-stb, andon_gateway
+Low RAM:  $LOW_MEMORY_MODE (zram is configured when this is 1)
 
 Reboot to start the kiosk:
   reboot

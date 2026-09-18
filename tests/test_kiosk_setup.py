@@ -11,6 +11,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP_SCRIPT = REPO_ROOT / "setup" / "setup-kiosk.sh"
+ZERO3_SETUP_SCRIPT = REPO_ROOT / "setup" / "setup-kiosk-zero3.sh"
 
 
 pytestmark = pytest.mark.skipif(
@@ -42,15 +43,30 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _materialize_launcher(tmp_path: Path, profile_dir: Path, url_file: Path) -> Path:
+def _materialize_launcher(
+    tmp_path: Path,
+    profile_dir: Path,
+    url_file: Path,
+    browser: str = "chromium",
+) -> Path:
     launcher = _extract_kiosk_launcher()
+    browser_file = tmp_path / "browser"
+    browser_file.write_text(f"{browser}\n", encoding="utf-8")
     launcher = launcher.replace(
         'readonly URL_FILE="/etc/kiosk/url"',
         f'readonly URL_FILE="{url_file}"',
     )
     launcher = launcher.replace(
+        'readonly BROWSER_FILE="/etc/kiosk/browser"',
+        f'readonly BROWSER_FILE="{browser_file}"',
+    )
+    launcher = launcher.replace(
         'readonly CHROMIUM_PROFILE_DIR="/root/.config/chromium"',
         f'readonly CHROMIUM_PROFILE_DIR="{profile_dir}"',
+    )
+    launcher = launcher.replace(
+        'readonly SURF_PROFILE_DIR="/root/.surf"',
+        f'readonly SURF_PROFILE_DIR="{profile_dir}"',
     )
     launcher = launcher.replace(
         'readonly DISPLAY_POLL_SECONDS="2"',
@@ -59,6 +75,10 @@ def _materialize_launcher(tmp_path: Path, profile_dir: Path, url_file: Path) -> 
     launcher = launcher.replace(
         'install -d -o root -g root -m 0700 "$CHROMIUM_PROFILE_DIR"',
         'install -d -m 0700 "$CHROMIUM_PROFILE_DIR"',
+    )
+    launcher = launcher.replace(
+        'install -d -o root -g root -m 0700 "$SURF_PROFILE_DIR"',
+        'install -d -m 0700 "$SURF_PROFILE_DIR"',
     )
     launcher = launcher.replace("sleep 2", "sleep 0.08")
 
@@ -203,3 +223,66 @@ def test_launcher_does_not_unlock_an_active_profile(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "profile is already in use" in result.stderr
     assert lock_file.read_text(encoding="utf-8") == "active"
+
+
+def test_zero3_launcher_uses_persistent_surf_kiosk_profile(tmp_path: Path) -> None:
+    profile_dir = tmp_path / "surf-profile"
+    url_file = tmp_path / "url"
+    url_file.write_text("https://kiosk.example/app\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _create_fake_desktop_commands(fake_bin)
+    _write_executable(
+        fake_bin / "xrandr",
+        """
+        #!/bin/sh
+        [ "${1:-}" != "--query" ] || printf '%s\n' 'HDMI-1 disconnected'
+        """,
+    )
+    surf_log = tmp_path / "surf-args"
+    _write_executable(
+        fake_bin / "surf",
+        f"""
+        #!/bin/sh
+        printf '%s\n' "$@" > "{surf_log}"
+        sleep 0.12
+        """,
+    )
+
+    launcher = _materialize_launcher(tmp_path, profile_dir, url_file, browser="surf")
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    result = subprocess.run(
+        ["bash", str(launcher)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cookie_file = profile_dir / "cookies.txt"
+    assert cookie_file.exists()
+    assert cookie_file.stat().st_mode & 0o777 == 0o600
+    surf_args = surf_log.read_text(encoding="utf-8").splitlines()
+    for option in ("-F", "-K", "-S", "-I", "-D", "-T"):
+        assert option in surf_args
+    assert "@Aa" in surf_args
+    assert str(cookie_file) in surf_args
+    assert "https://kiosk.example/app" in surf_args
+
+
+def test_zero3_wrapper_selects_noble_arm64_surf_and_zram():
+    wrapper = ZERO3_SETUP_SCRIPT.read_text(encoding="utf-8")
+    installer = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'export COUNTER_KIOSK_BROWSER=surf' in wrapper
+    assert 'export COUNTER_KIOSK_LOW_MEMORY=1' in wrapper
+    assert 'os_codename" != "noble"' in wrapper
+    assert 'dpkg --print-architecture' in wrapper
+    assert 'packages+=(surf)' in installer
+    assert 'packages+=(kmod zram-tools)' in installer
+    assert 'PERCENT=50' in installer
+    assert 'vm.swappiness=100' in installer

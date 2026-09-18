@@ -37,6 +37,9 @@ volume.
 | `counterctl config validate` | Validate schema, credentials, and writable data paths | No |
 | `counterctl credentials set local` | Replace local MQTT client credentials | No |
 | `counterctl credentials set remote` | Replace remote MQTT client credentials | No |
+| `counterctl kiosk show` | Display the current kiosk URL | No |
+| `counterctl kiosk set URL` | Atomically update the kiosk URL | Not until explicitly restarted |
+| `counterctl kiosk restart` | Restart the X11/Chromium kiosk | Restarts only the kiosk |
 
 To display built-in help:
 
@@ -46,7 +49,60 @@ docker compose run --rm counterctl init --help
 docker compose run --rm counterctl config --help
 docker compose run --rm counterctl config set --help
 docker compose run --rm counterctl credentials --help
+docker compose run --rm counterctl kiosk --help
+docker compose run --rm counterctl kiosk set --help
 ```
+
+## Managing the kiosk URL
+
+The kiosk URL is intentionally kept in the existing host file
+`/etc/kiosk/url`; it is not copied into `runtime.yaml`. Only the `counterctl`
+container has read-write access to the host kiosk configuration directory.
+
+Show the current URL:
+
+```sh
+docker compose run --rm counterctl kiosk show
+```
+
+Update the URL atomically without interrupting the current browser session:
+
+```sh
+docker compose run --rm counterctl kiosk set http://192.168.100.38
+```
+
+The new URL is used the next time the kiosk starts. To apply it immediately,
+either use the convenience option:
+
+```sh
+docker compose run --rm counterctl kiosk set http://192.168.100.38 --restart
+```
+
+or restart separately after one or more edits:
+
+```sh
+docker compose run --rm counterctl kiosk restart
+```
+
+Accepted URLs must be absolute `http://` or `https://` URLs and cannot contain
+whitespace or control characters. Quote a URL if it contains shell metacharacters
+such as `&` or `?`.
+
+Restart requests are passed to a narrowly scoped systemd path unit installed by
+`setup/setup-kiosk.sh`. It restarts `getty@tty1.service`, which recreates the
+X11/Openbox/Chromium kiosk session. MQTT, OTA, scanner, and HTTP containers keep
+running. The persistent Chromium profile is reused, so cookies, saved logins,
+local storage, and preferences remain intact.
+
+After upgrading an existing device to the first version containing these kiosk
+commands, install the host path unit once while retaining the current URL:
+
+```sh
+sudo bash setup/setup-kiosk.sh "$(cat /etc/kiosk/url)"
+```
+
+If the setup has not been installed, or the host bind/path unit is missing, the
+CLI reports an error instead of attempting broad host access.
 
 ## First-time initialization
 
@@ -196,6 +252,15 @@ Compose `host-gateway` mapping. Use it when Mosquitto runs directly on the
 Orange Pi rather than in this Compose project. The host broker must listen on
 an address reachable from Docker; a broker listening only on `127.0.0.1` is
 not reachable through the bridge gateway.
+
+The bundled `setup-kiosk.sh` installer installs this host broker, disables
+anonymous access, and creates the `mqtt-stb` and `andon_gateway` accounts with
+hidden password prompts. A managed firewall permits port 1883 only through
+loopback, Docker bridge interfaces, and `eth1`, while Mosquitto uses a stable
+IPv4 wildcard listener so transient interface addresses cannot prevent it from
+starting during boot. Enter `mqtt-stb` with its matching password when
+`counterctl init` or `credentials set local` asks for the application's local
+broker credentials.
 
 Changing the local endpoint reconnects:
 
@@ -401,6 +466,16 @@ This replaces the username and password used by:
 - `scanner-inspect`.
 
 Both services notice the encrypted-file change and reconnect automatically.
+
+To rotate the password on the Mosquitto host, use its interactive command so
+the new password is not exposed in shell history, then update the application
+credential store with the matching value:
+
+```sh
+sudo mosquitto_passwd /etc/mosquitto/passwd mqtt-stb
+sudo systemctl reload mosquitto
+docker compose run --rm counterctl credentials set local
+```
 
 ### Remote broker credentials
 
