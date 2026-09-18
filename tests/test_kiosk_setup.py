@@ -274,27 +274,43 @@ def test_zero3_launcher_uses_persistent_surf_kiosk_profile(tmp_path: Path) -> No
     assert "https://kiosk.example/app" in surf_args
 
 
-def test_zero3_wrapper_selects_noble_arm64_surf_and_zram():
+def test_zero3_wrapper_selects_noble_arm64_surf_and_os_zram():
     wrapper = ZERO3_SETUP_SCRIPT.read_text(encoding="utf-8")
     installer = SETUP_SCRIPT.read_text(encoding="utf-8")
 
     assert 'export COUNTER_KIOSK_BROWSER=surf' in wrapper
-    assert 'export COUNTER_KIOSK_LOW_MEMORY=1' in wrapper
+    assert 'export COUNTER_KIOSK_LOW_MEMORY=0' in wrapper
     assert 'os_codename" != "noble"' in wrapper
     assert 'dpkg --print-architecture' in wrapper
     assert 'packages+=(surf)' in installer
     assert 'packages+=(kmod zram-tools)' in installer
-    assert 'PERCENT=50' in installer
-    assert 'vm.swappiness=100' in installer
+    assert 'swapon --noheadings --raw --show=NAME' in wrapper
+    assert 'systemctl disable zramswap.service' in wrapper
+    assert 'vm.swappiness=100' in wrapper
     assert 'WEBKIT_DISABLE_DMABUF_RENDERER=1 surf' in wrapper
-    assert 'startx $KIOSK_SCRIPT >>$KIOSK_LOG' in wrapper
+    assert 'ExecStart=/usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp' in wrapper
+
+
+def test_zero3_wrapper_uses_systemd_without_root_autologin():
+    wrapper = ZERO3_SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'rm -f "$GETTY_DROPIN"' in wrapper
+    assert 'systemctl disable getty@tty1.service' in wrapper
+    assert 'Conflicts=getty@tty1.service' in wrapper
+    assert 'WantedBy=multi-user.target' in wrapper
+    assert 'systemctl enable --now counter-inspect-kiosk.service' in wrapper
+    assert "sed \"/^${PROFILE_BEGIN}$/,/^${PROFILE_END}$/d\"" in wrapper
+    assert "restart counter-inspect-kiosk.service" in wrapper
 
 
 def test_zero3_wrapper_overrides_network_and_mqtt_firewall_interfaces():
     wrapper = ZERO3_SETUP_SCRIPT.read_text(encoding="utf-8")
 
-    assert 'con-name shared-eth0' in wrapper
+    assert 'for candidate in end0 eth0' in wrapper
+    assert 'requested="${COUNTER_ZERO3_INTERFACE:-}"' in wrapper
+    assert 'shared_connection="shared-$COUNTER_INTERFACE"' in wrapper
+    assert 'con-name "$shared_connection"' in wrapper
     assert 'nmcli connection modify wired-eth0 connection.autoconnect no' in wrapper
-    assert 'nmcli connection modify shared-eth1 connection.autoconnect no' in wrapper
-    assert 'iptables -w -A "$MQTT_CHAIN" -i eth0 -j ACCEPT' in wrapper
+    assert 'for obsolete_connection in shared-eth0 shared-eth1' in wrapper
+    assert r'iptables -w -A "\$MQTT_CHAIN" -i "\$COUNTER_INTERFACE" -j ACCEPT' in wrapper
     assert 'systemctl restart counter-inspect-mqtt-firewall.service' in wrapper
