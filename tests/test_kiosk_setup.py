@@ -288,7 +288,8 @@ def test_zero3_wrapper_selects_noble_arm64_surf_and_os_zram():
     assert 'systemctl disable zramswap.service' in wrapper
     assert 'vm.swappiness=100' in wrapper
     assert 'WEBKIT_DISABLE_DMABUF_RENDERER=1 surf' in wrapper
-    assert 'ExecStart=/usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp' in wrapper
+    assert 'ExecStart=/usr/bin/dbus-run-session -- /usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp' in wrapper
+    assert 'StartLimitBurst=6' in wrapper
 
 
 def test_zero3_wrapper_uses_systemd_without_root_autologin():

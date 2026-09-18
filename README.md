@@ -21,12 +21,16 @@ on local and remote brokers before starting these services.
 
 The bundled installer installs Git, Docker Engine, the Compose v2 plugin, and
 the local Mosquitto broker. Mosquitto rejects anonymous connections and is
-bound only to loopback, Docker's host gateway, and—when active—the dedicated
-`eth1` address `10.42.0.1`. It creates the `mqtt-stb` and `andon_gateway`
-accounts using hidden interactive password prompts. Enter the passwords given
-to your deployment operator; plaintext passwords are never stored in this
-repository or passed as command arguments. Existing accounts are preserved on
-subsequent installer runs.
+reachable only through loopback, Docker bridge interfaces, and the dedicated
+`eth1` interface. A managed firewall service blocks port 1883 on `eth0` and
+every other host interface. This avoids binding Mosquitto to transient IP
+addresses that may not exist yet during boot.
+
+The installer creates the `mqtt-stb` and `andon_gateway` accounts using hidden
+interactive password prompts. Enter the passwords given to your deployment
+operator; plaintext passwords are never stored in this repository or passed as
+command arguments. Existing accounts are preserved on subsequent installer
+runs.
 
 The installer clones
 `https://github.com/zack-cpp/HAS---Auto-Inspect-OPI.git` directly as
@@ -35,9 +39,10 @@ name, so no extra unused repository directory is left behind.
 
 The installer also configures root autologin on tty1, starts the
 X11/Openbox/Chromium kiosk, creates a dedicated Xauthority directory, and
-updates the cloned application's `.env` without replacing unrelated values
-such as `OTA_HTTP_PORT`. It configures the documented `eth0` DHCP and `eth1`
-shared-network connections, so review those assumptions before running it.
+updates the cloned application's `.env`. The managed values include
+`OTA_HTTP_PORT=80` and the X11 settings, while unrelated values are preserved.
+It configures the documented `eth0` DHCP and `eth1` shared-network connections,
+so review those assumptions before running it.
 
 ```sh
 sudo bash setup/setup-kiosk.sh http://192.168.100.38
@@ -53,6 +58,7 @@ overwriting it.
 The managed settings are:
 
 ```dotenv
+OTA_HTTP_PORT=80
 DISPLAY=:0
 XAUTHORITY_DIR=/etc/counter-inspect/xauth
 X11_HOSTNAME=armbian
@@ -62,6 +68,121 @@ The directory is created during installation, so Docker can create the scanner
 container before X starts. Once `startx` creates or rotates `Xauthority`, the
 running scanner reconnects without a container restart. Reboot after the first
 kiosk installation to activate tty1 autologin and X11.
+
+Chromium uses the persistent `/root/.config/chromium` profile, so saved logins,
+cookies, local storage, preferences, and other browser state survive reboot.
+Before launch, the kiosk removes only stale `SingletonLock`, `SingletonSocket`,
+and `SingletonCookie` artifacts, and only after verifying that no running
+Chromium process is using the profile. This prevents the "profile appears to be
+in use" dialog after an unclean power loss without erasing credentials.
+
+The kiosk also watches X11 display state every two seconds. If a monitor is
+connected after a headless boot, its first connected output is made primary
+and switched to its EDID-preferred mode with normal rotation and 1:1 scaling.
+Chromium remains open and resizes with X; Docker services and scanner input are
+not restarted.
+
+The kiosk URL remains in `/etc/kiosk/url` and can be managed through the Docker
+CLI. The setup script installs a narrowly scoped systemd path unit so the CLI
+can restart only the X11/Chromium kiosk without restarting Docker services:
+
+```sh
+docker compose run --rm counterctl kiosk show
+docker compose run --rm counterctl kiosk set http://192.168.100.38 --restart
+docker compose run --rm counterctl kiosk restart
+```
+
+After pulling the version that introduces these commands on an existing Orange
+Pi, run `sudo bash setup/setup-kiosk.sh "$(cat /etc/kiosk/url)"` once to install
+the host restart path unit while retaining the current URL. Normal future URL
+changes require only `counterctl`.
+
+### Orange Pi Zero 3, Ubuntu Noble, 1 GB RAM
+
+Use the dedicated Zero 3 installer instead of the Chromium installer:
+
+```sh
+sudo bash setup/setup-kiosk-zero3.sh http://192.168.100.38
+```
+
+`setup-kiosk-zero3.sh` is a wrapper around the shared installer, so both files
+from `setup/` must be present. It refuses non-ARM64 userspace and non-Noble
+Ubuntu derivatives to prevent accidentally applying the board-specific tuning
+elsewhere.
+
+This variant keeps the same Docker, Mosquitto, X11 scanner, persistent kiosk
+URL, CLI restart, and HDMI hot-plug setup, with two deliberate differences:
+
+- It installs the native Noble ARM64 `surf` package instead of Chromium/Snap.
+  Surf is a small X11 WebKitGTK browser, so keyboard-emulated scanner input is
+  still visible to the scanner container. JavaScript, images, disk cache,
+  strict TLS, fullscreen, and kiosk mode are enabled.
+- It preserves Orange Pi OS's existing zram configuration. On the tested 1 GB
+  image, the OS already creates approximately 491 MB of compressed swap on
+  `zram0` and uses `zram1` for compressed logs. The wrapper disables the
+  conflicting `zramswap.service` installed by older runs. If no zram swap is
+  present, it falls back to `zram-tools`. No SD-card swap file is created.
+- It starts X11 and Surf with `counter-inspect-kiosk.service`; tty1 root
+  autologin is removed and disabled. Browser output is written directly to the
+  persistent kiosk log. The service creates an explicit D-Bus session for
+  WebKitGTK and rate-limits repeated failures to prevent endless screen
+  flashing.
+
+The Zero 3 has only one onboard Ethernet port, so this installer detects its
+kernel name (`end0` on current Orange Pi OS images, sometimes `eth0`) and
+reserves it for the counter LAN at `10.42.0.1/24`. Wi-Fi or another
+system-managed interface provides upstream connectivity. During installation,
+it saves the matching `shared-<interface>` profile without activating it so a
+wired SSH session is not cut off. The profile activates automatically after
+reboot. To override detection, run with, for example,
+`COUNTER_ZERO3_INTERFACE=end0`. The standard installer remains unchanged: it
+uses `eth0` upstream and shares `eth1`.
+
+Surf uses `/root/.surf/cookies.txt` as an explicit persistent cookie jar;
+WebKitGTK website data also remains under root's persistent home directory.
+Login once after moving from Chromium because Chromium profile data is not
+migrated. Future reboots and kiosk restarts retain Surf's cookie and website
+state. The existing `/root/.config/chromium` profile is not deleted.
+
+Verify the low-memory setup after installation:
+
+```sh
+swapon --show
+free -h
+zramctl
+systemctl is-enabled zramswap.service || true
+cat /etc/kiosk/browser
+nmcli connection show --active
+```
+
+The browser command should print `surf`, and NetworkManager should show
+`shared-end0` (or the detected interface name) after reboot. When Orange Pi OS
+supplies zram, `zramswap.service` is intentionally disabled; use `zramctl` and
+`swapon --show` as the source of truth. The URL CLI is unchanged:
+
+```sh
+docker compose run --rm counterctl kiosk show
+docker compose run --rm counterctl kiosk set https://example.com --restart
+```
+
+Surf uses WebKit rather than Chromium. Test the production site before rollout,
+especially camera, DRM, browser-extension, or Chromium-specific functionality.
+The current inspection/login application should be acceptance-tested for its
+JavaScript and CSS behavior on the exact Noble image.
+
+The kiosk writes Xorg, Openbox, and browser output to
+`/var/log/counter-inspect-kiosk.log`. If the display stays on the console after
+reboot, inspect it together with the dedicated kiosk service:
+
+```sh
+tail -n 200 /var/log/counter-inspect-kiosk.log
+systemctl status counter-inspect-kiosk.service --no-pager
+journalctl -b -u counter-inspect-kiosk.service --no-pager
+```
+
+For the Zero 3, the launcher disables WebKitGTK's DMA-BUF renderer because the
+vendor GPU stack may otherwise prevent Surf from opening. This does not clear
+the persistent Surf cookie or website-data directories.
 
 ## First deployment
 

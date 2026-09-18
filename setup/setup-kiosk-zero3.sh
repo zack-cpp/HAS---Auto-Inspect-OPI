@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly BASE_INSTALLER="$SCRIPT_DIR/setup-kiosk.sh"
-readonly ZERO3_SETUP_REVISION="zero3-systemd-auto-interface-v1"
+readonly ZERO3_SETUP_REVISION="zero3-dbus-auto-interface-v2"
 readonly KIOSK_SCRIPT="/root/counter_inspect/kiosk.sh"
 readonly KIOSK_PROFILE="/root/.bash_profile"
 readonly KIOSK_LOG="/var/log/counter-inspect-kiosk.log"
@@ -199,7 +199,10 @@ configure_zero3_kiosk() {
     local launcher_tmp
     local profile_tmp
 
-    apt-get install -y dbus-x11 xserver-xorg-video-fbdev
+    apt-get install -y dbus-x11 python3-xdg xserver-xorg-video-fbdev
+
+    # Stop an older restart loop before replacing its launcher and unit.
+    systemctl stop counter-inspect-kiosk.service >/dev/null 2>&1 || true
 
     if [[ ! -r "$KIOSK_SCRIPT" ]]; then
         echo "Error: base installer did not create $KIOSK_SCRIPT" >&2
@@ -233,6 +236,8 @@ Description=Counter Inspect Zero3 X11 kiosk
 Wants=network-online.target
 After=network-online.target systemd-user-sessions.service getty@tty1.service
 Conflicts=getty@tty1.service
+StartLimitIntervalSec=60
+StartLimitBurst=6
 
 [Service]
 Type=simple
@@ -240,6 +245,7 @@ User=root
 WorkingDirectory=/root
 Environment=HOME=/root
 Environment=XAUTHORITY=/etc/counter-inspect/xauth/Xauthority
+Environment=GDK_BACKEND=x11
 TTYPath=/dev/tty1
 StandardInput=tty-force
 StandardOutput=append:$KIOSK_LOG
@@ -247,7 +253,7 @@ StandardError=append:$KIOSK_LOG
 TTYReset=yes
 TTYVHangup=yes
 TTYVTDisallocate=yes
-ExecStart=/usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp
+ExecStart=/usr/bin/dbus-run-session -- /usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp
 Restart=always
 RestartSec=5
 KillMode=control-group
@@ -273,10 +279,11 @@ EOF
 
     systemctl daemon-reload
     systemctl disable getty@tty1.service >/dev/null 2>&1 || true
+    systemctl reset-failed counter-inspect-kiosk.service >/dev/null 2>&1 || true
     systemctl enable --now counter-inspect-kiosk.service
     systemctl enable counter-inspect-kiosk-restart.path
 
-    sleep 3
+    sleep 6
     if systemctl is-active --quiet counter-inspect-kiosk.service; then
         echo "Zero3 kiosk service is running."
     else
