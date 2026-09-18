@@ -126,7 +126,9 @@ URL, CLI restart, and HDMI hot-plug setup, with two deliberate differences:
   autologin is removed and disabled. Browser output is written directly to the
   persistent kiosk log. The service creates an explicit D-Bus session for
   WebKitGTK and rate-limits repeated failures to prevent endless screen
-  flashing.
+  flashing. The X server grants access only to the local root kiosk identity in
+  addition to clients holding the generated Xauthority cookie; it does not use
+  the global `xhost +` setting.
 
 The Zero 3 has only one onboard Ethernet port, so this installer detects its
 kernel name (`end0` on current Orange Pi OS images, sometimes `eth0`) and

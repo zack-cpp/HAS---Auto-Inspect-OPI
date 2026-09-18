@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly BASE_INSTALLER="$SCRIPT_DIR/setup-kiosk.sh"
-readonly ZERO3_SETUP_REVISION="zero3-dbus-auto-interface-v2"
+readonly ZERO3_SETUP_REVISION="zero3-xauth-auto-interface-v4"
 readonly KIOSK_SCRIPT="/root/counter_inspect/kiosk.sh"
 readonly KIOSK_PROFILE="/root/.bash_profile"
 readonly KIOSK_LOG="/var/log/counter-inspect-kiosk.log"
@@ -212,10 +212,29 @@ configure_zero3_kiosk() {
     # WebKitGTK's DMA-BUF renderer is unreliable with the Zero3 vendor GPU
     # stack. Apply this only to Surf in the generated Zero3 launcher.
     launcher_tmp="$(mktemp)"
-    sed 's/^    surf \\/    WEBKIT_DISABLE_DMABUF_RENDERER=1 surf \\/' \
-        "$KIOSK_SCRIPT" >"$launcher_tmp"
+    awk '
+        { print }
+        $0 == "set -Eeuo pipefail" {
+            print ""
+            print "# Surf opens X11 directly. Authorize only this local root kiosk user."
+            print "if ! xhost +SI:localuser:root >/dev/null 2>&1; then"
+            print "    echo \"Warning: could not authorize the local root kiosk for X11.\" >&2"
+            print "fi"
+        }
+    ' "$KIOSK_SCRIPT" | \
+        sed 's/^    surf \\/    WEBKIT_DISABLE_DMABUF_RENDERER=1 surf \\/' \
+        >"$launcher_tmp"
     install -o root -g root -m 0755 "$launcher_tmp" "$KIOSK_SCRIPT"
     rm -f "$launcher_tmp"
+
+    # Surf looks for this optional stylesheet on every launch. Keep the file
+    # persistent and empty by default instead of logging a misleading error.
+    install -d -o root -g root -m 0700 /root/.surf/styles
+    if [[ ! -e /root/.surf/styles/default.css ]]; then
+        touch /root/.surf/styles/default.css
+    fi
+    chown root:root /root/.surf/styles/default.css
+    chmod 0600 /root/.surf/styles/default.css
 
     touch "$KIOSK_LOG"
     chmod 0644 "$KIOSK_LOG"
@@ -237,7 +256,7 @@ Wants=network-online.target
 After=network-online.target systemd-user-sessions.service getty@tty1.service
 Conflicts=getty@tty1.service
 StartLimitIntervalSec=60
-StartLimitBurst=6
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -246,6 +265,7 @@ WorkingDirectory=/root
 Environment=HOME=/root
 Environment=XAUTHORITY=/etc/counter-inspect/xauth/Xauthority
 Environment=GDK_BACKEND=x11
+Environment=GSETTINGS_BACKEND=memory
 TTYPath=/dev/tty1
 StandardInput=tty-force
 StandardOutput=append:$KIOSK_LOG
