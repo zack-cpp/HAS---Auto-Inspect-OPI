@@ -286,3 +286,15 @@ def test_zero3_wrapper_selects_noble_arm64_surf_and_zram():
     assert 'packages+=(kmod zram-tools)' in installer
     assert 'PERCENT=50' in installer
     assert 'vm.swappiness=100' in installer
+    assert 'WEBKIT_DISABLE_DMABUF_RENDERER=1 surf' in wrapper
+    assert 'startx $KIOSK_SCRIPT >>$KIOSK_LOG' in wrapper
+
+
+def test_zero3_wrapper_overrides_network_and_mqtt_firewall_interfaces():
+    wrapper = ZERO3_SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'con-name shared-eth0' in wrapper
+    assert 'nmcli connection modify wired-eth0 connection.autoconnect no' in wrapper
+    assert 'nmcli connection modify shared-eth1 connection.autoconnect no' in wrapper
+    assert 'iptables -w -A "$MQTT_CHAIN" -i eth0 -j ACCEPT' in wrapper
+    assert 'systemctl restart counter-inspect-mqtt-firewall.service' in wrapper
