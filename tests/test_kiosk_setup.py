@@ -293,6 +293,9 @@ def test_zero3_wrapper_selects_noble_arm64_surf_and_os_zram():
     assert 'Environment=GSETTINGS_BACKEND=memory' in wrapper
     assert 'ExecStart=/usr/bin/dbus-run-session -- /usr/bin/startx $KIOSK_SCRIPT -- :0 vt1 -keeptty -nolisten tcp' in wrapper
     assert 'StartLimitBurst=3' in wrapper
+    assert 'install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"' in installer
+    assert 'install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"' in wrapper
+    assert 'configure_zero3_updates_directory' in wrapper
 
 
 def test_zero3_wrapper_uses_systemd_without_root_autologin():

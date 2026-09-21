@@ -468,7 +468,7 @@ install -d -o 10001 -g 10001 -m 2770 \
     "$APP_DIR/config" \
     "$APP_DIR/logs" \
     "$APP_DIR/state/queue"
-install -d -o 10001 -g 10001 -m 2775 "$APP_DIR/updates"
+install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"
 if [[ -f "$APP_DIR/config/credentials.enc" ]]; then
     chown 10001:10001 "$APP_DIR/config/credentials.enc"
     chmod 0640 "$APP_DIR/config/credentials.enc"

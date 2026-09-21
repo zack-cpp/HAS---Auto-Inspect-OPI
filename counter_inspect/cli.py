@@ -34,6 +34,9 @@ def _ensure_directory(path: Path, mode: int = 0o750) -> None:
     path.mkdir(parents=True, exist_ok=True)
     try:
         os.chown(path, DATA_UID, DATA_GID)
+    except (AttributeError, OSError):
+        pass
+    try:
         os.chmod(path, mode)
     except (AttributeError, OSError):
         pass
@@ -73,9 +76,10 @@ def command_init(args: argparse.Namespace, store: ConfigStore) -> int:
 
     _ensure_directory(Path("/data/logs"))
     _ensure_directory(Path("/data/queue"))
-    # The unprivileged static HTTP container must be able to traverse and read
-    # this directory. Firmware files themselves are written with mode 0644.
-    _ensure_directory(Path("/data/updates"), mode=0o755)
+    # Operators and both application containers must be able to manage OTA
+    # files regardless of their host UID/GID. Keep setgid so newly created
+    # entries inherit the deployment group.
+    _ensure_directory(Path("/data/updates"), mode=0o2777)
 
     print(f"Initialized runtime configuration at {store.config_path}")
     print("Credentials were encrypted; running services will reload future edits automatically.")

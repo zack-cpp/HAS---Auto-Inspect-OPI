@@ -4,8 +4,9 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly BASE_INSTALLER="$SCRIPT_DIR/setup-kiosk.sh"
-readonly ZERO3_SETUP_REVISION="zero3-xauth-auto-interface-v4"
+readonly ZERO3_SETUP_REVISION="zero3-world-writable-updates-v5"
 readonly KIOSK_SCRIPT="/root/counter_inspect/kiosk.sh"
+readonly APP_DIR="/root/counter_inspect/opi-app"
 readonly KIOSK_PROFILE="/root/.bash_profile"
 readonly KIOSK_LOG="/var/log/counter-inspect-kiosk.log"
 readonly ZRAM_CONFIG="/etc/default/zramswap"
@@ -314,6 +315,13 @@ EOF
     fi
 }
 
+configure_zero3_updates_directory() {
+    # OTA files are exchanged by containers and host-side operators that do
+    # not necessarily share a UID/GID. Preserve setgid while allowing every
+    # local user to traverse, read, create, replace, and remove entries.
+    install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"
+}
+
 if (( EUID != 0 )); then
     echo "Error: run this script as root." >&2
     exit 1
@@ -361,6 +369,7 @@ export COUNTER_KIOSK_BROWSER=surf
 export COUNTER_KIOSK_LOW_MEMORY=0
 bash "$BASE_INSTALLER" "$@"
 
+configure_zero3_updates_directory
 configure_zero3_zram
 configure_zero3_network
 configure_zero3_kiosk

@@ -5,6 +5,17 @@ from pathlib import Path
 from counter_inspect import cli
 
 
+def test_ensure_directory_applies_world_writable_setgid_mode(tmp_path, monkeypatch):
+    updates_dir = tmp_path / "updates"
+    chmod_calls = []
+    monkeypatch.setattr(cli.os, "chown", lambda *_args: None, raising=False)
+    monkeypatch.setattr(cli.os, "chmod", lambda path, mode: chmod_calls.append((path, mode)))
+
+    cli._ensure_directory(updates_dir, mode=0o2777)
+
+    assert chmod_calls == [(updates_dir, 0o2777)]
+
+
 def _use_kiosk_directory(monkeypatch, directory: Path) -> None:
     monkeypatch.setattr(cli, "KIOSK_DIR", directory)
     monkeypatch.setattr(cli, "KIOSK_URL_PATH", directory / "url")
