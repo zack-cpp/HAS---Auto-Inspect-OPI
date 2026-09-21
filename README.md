@@ -110,6 +110,13 @@ from `setup/` must be present. It refuses non-ARM64 userspace and non-Noble
 Ubuntu derivatives to prevent accidentally applying the board-specific tuning
 elsewhere.
 
+When run from a complete Git checkout, the Zero 3 installer configures that
+exact checkout as the Docker application directory. For example, running it
+from `/home/orangepi/counter_inspect/opi-app` makes that directory's `config`,
+`logs`, `state`, and `updates` mounts authoritative and avoids creating an
+unused second application copy under `/root`. If only the two setup scripts
+are copied to the machine, it falls back to `/root/counter_inspect/opi-app`.
+
 This variant keeps the same Docker, Mosquitto, X11 scanner, persistent kiosk
 URL, CLI restart, and HDMI hot-plug setup, with two deliberate differences:
 
@@ -224,7 +231,11 @@ docker compose ps
 - `config/credentials.enc`, containing AES-256-GCM encrypted credentials
 - a 256-bit encryption key in the `counter-inspect_counter_secret_key` Docker
   volume
-- writable `logs`, `state/queue`, and `updates` directories
+- writable `logs` and `state/queue` directories
+- an `updates` directory with mode `2777`, allowing host users and containers
+  to read existing OTA files and create, replace, or remove entries while
+  preserving the deployment group on new entries; OTA files use mode `0666`
+  so an SSH/SFTP operator can also overwrite an existing filename
 
 Do not run `docker compose down --volumes` unless the encryption key has been
 backed up and you intend to destroy this deployment's stored credentials.

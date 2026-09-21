@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import stat
 
 import pytest
 
@@ -45,6 +46,8 @@ def test_download_stages_both_files_before_replacing(monkeypatch, tmp_path):
 
     assert (tmp_path / "firmware.bin").read_bytes() == b"firmware"
     assert (tmp_path / "version.txt").read_bytes() == b"1.2.3\n"
+    assert stat.S_IMODE((tmp_path / "firmware.bin").stat().st_mode) & 0o666 == 0o666
+    assert stat.S_IMODE((tmp_path / "version.txt").stat().st_mode) & 0o666 == 0o666
 
 
 def test_failed_second_download_keeps_existing_files(monkeypatch, tmp_path):

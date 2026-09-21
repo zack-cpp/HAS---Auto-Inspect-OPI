@@ -143,7 +143,9 @@ class OtaService:
                     raise ValueError("downloaded file is empty")
                 output.flush()
                 os.fsync(output.fileno())
-            os.chmod(temporary, 0o644)
+            # The deployment intentionally supports host-side SSH/SFTP
+            # replacement by operators whose UID differs from the container.
+            os.chmod(temporary, 0o666)
             return temporary
         except Exception:
             temporary.unlink(missing_ok=True)

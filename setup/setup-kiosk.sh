@@ -9,7 +9,7 @@ readonly LOW_MEMORY_MODE="${COUNTER_KIOSK_LOW_MEMORY:-0}"
 readonly KIOSK_DIR="/root/counter_inspect"
 readonly KIOSK_SCRIPT="$KIOSK_DIR/kiosk.sh"
 readonly APP_REPOSITORY_URL="https://github.com/zack-cpp/HAS---Auto-Inspect-OPI.git"
-readonly APP_DIR="$KIOSK_DIR/opi-app"
+readonly APP_DIR="${COUNTER_APP_DIR:-$KIOSK_DIR/opi-app}"
 readonly APP_ENV_FILE="$APP_DIR/.env"
 readonly DOCKER_KEYRING="/etc/apt/keyrings/docker.asc"
 readonly DOCKER_SOURCES="/etc/apt/sources.list.d/docker.sources"
@@ -86,6 +86,11 @@ case "$LOW_MEMORY_MODE" in
         exit 2
         ;;
 esac
+
+if [[ "$APP_DIR" != /* ]]; then
+    echo "Error: COUNTER_APP_DIR must be an absolute path: $APP_DIR" >&2
+    exit 2
+fi
 
 case "$KIOSK_URL" in
     http://*|https://*) ;;
@@ -469,6 +474,7 @@ install -d -o 10001 -g 10001 -m 2770 \
     "$APP_DIR/logs" \
     "$APP_DIR/state/queue"
 install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"
+find "$APP_DIR/updates" -maxdepth 1 -type f -exec chmod 0666 {} +
 if [[ -f "$APP_DIR/config/credentials.enc" ]]; then
     chown 10001:10001 "$APP_DIR/config/credentials.enc"
     chmod 0640 "$APP_DIR/config/credentials.enc"

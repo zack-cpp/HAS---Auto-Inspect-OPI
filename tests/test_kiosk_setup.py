@@ -295,7 +295,12 @@ def test_zero3_wrapper_selects_noble_arm64_surf_and_os_zram():
     assert 'StartLimitBurst=3' in wrapper
     assert 'install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"' in installer
     assert 'install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"' in wrapper
+    assert 'find "$APP_DIR/updates" -maxdepth 1 -type f -exec chmod 0666 {} +' in installer
+    assert 'find "$APP_DIR/updates" -maxdepth 1 -type f -exec chmod 0666 {} +' in wrapper
     assert 'configure_zero3_updates_directory' in wrapper
+    assert 'readonly APP_DIR="${COUNTER_APP_DIR:-$KIOSK_DIR/opi-app}"' in installer
+    assert 'readonly SOURCE_APP_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"' in wrapper
+    assert 'export COUNTER_APP_DIR="$APP_DIR"' in wrapper
 
 
 def test_zero3_wrapper_uses_systemd_without_root_autologin():

@@ -4,9 +4,14 @@ set -Eeuo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly BASE_INSTALLER="$SCRIPT_DIR/setup-kiosk.sh"
-readonly ZERO3_SETUP_REVISION="zero3-world-writable-updates-v5"
+readonly ZERO3_SETUP_REVISION="zero3-checkout-app-directory-v6"
 readonly KIOSK_SCRIPT="/root/counter_inspect/kiosk.sh"
-readonly APP_DIR="/root/counter_inspect/opi-app"
+readonly SOURCE_APP_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+if [[ -d "$SOURCE_APP_DIR/.git" && -r "$SOURCE_APP_DIR/compose.yaml" ]]; then
+    readonly APP_DIR="$SOURCE_APP_DIR"
+else
+    readonly APP_DIR="/root/counter_inspect/opi-app"
+fi
 readonly KIOSK_PROFILE="/root/.bash_profile"
 readonly KIOSK_LOG="/var/log/counter-inspect-kiosk.log"
 readonly ZRAM_CONFIG="/etc/default/zramswap"
@@ -320,6 +325,7 @@ configure_zero3_updates_directory() {
     # not necessarily share a UID/GID. Preserve setgid while allowing every
     # local user to traverse, read, create, replace, and remove entries.
     install -d -o 10001 -g 10001 -m 2777 "$APP_DIR/updates"
+    find "$APP_DIR/updates" -maxdepth 1 -type f -exec chmod 0666 {} +
 }
 
 if (( EUID != 0 )); then
@@ -367,6 +373,9 @@ export COUNTER_KIOSK_BROWSER=surf
 # Orange Pi OS already supplies correctly sized zram swap and compressed logs.
 # Do not let the base installer add the conflicting zram-tools manager.
 export COUNTER_KIOSK_LOW_MEMORY=0
+# When this wrapper is run from an application checkout, configure that exact
+# checkout instead of creating an unused second copy under /root.
+export COUNTER_APP_DIR="$APP_DIR"
 bash "$BASE_INSTALLER" "$@"
 
 configure_zero3_updates_directory
