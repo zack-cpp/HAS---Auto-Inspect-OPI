@@ -20,6 +20,8 @@ LOCAL_TOPICS = (
     "counter/running",
     "config/return",
     "counter/info",
+    "counter/label",
+    "counter/label-sku",
 )
 REMOTE_TOPICS = ("return/inspection/startjob", "return/error", "config/config")
 

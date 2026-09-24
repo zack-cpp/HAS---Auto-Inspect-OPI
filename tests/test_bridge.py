@@ -18,10 +18,15 @@ class FakeClient:
     def __init__(self, rc=mqtt.MQTT_ERR_SUCCESS):
         self.rc = rc
         self.messages = []
+        self.subscriptions = []
 
     def publish(self, topic, payload):
         self.messages.append((topic, payload))
         return PublishResult(self.rc)
+
+    def subscribe(self, topic):
+        self.subscriptions.append(topic)
+        return (mqtt.MQTT_ERR_SUCCESS, len(self.subscriptions))
 
 
 class Message:
@@ -53,6 +58,27 @@ def test_remote_messages_are_filtered_by_shared_device_id(tmp_path):
     payload = json.dumps({"mesin_id": "HAS-AI-0003", "cmd": "reboot"})
     service._on_message_remote(None, None, Message("config/config", payload))
     assert local.messages == [("config/config", payload)]
+
+
+def test_local_bridge_subscribes_to_scanner_topics(tmp_path):
+    service = BridgeService(make_settings(tmp_path), logging.getLogger("bridge-scanner-topics-test"))
+    local = FakeClient()
+
+    service._on_connect_local(local, None, None, 0, None)
+
+    assert "counter/label" in local.subscriptions
+    assert "counter/label-sku" in local.subscriptions
+
+
+def test_scanner_messages_are_forwarded_to_remote_broker(tmp_path):
+    service = BridgeService(make_settings(tmp_path), logging.getLogger("bridge-scanner-forward-test"))
+    remote = FakeClient()
+    service.remote_client = remote
+    payload = json.dumps({"serialNumber": "HAS-AI-0003", "employeeNik": "1234"})
+
+    service._on_message_local(None, None, Message("counter/label", payload))
+
+    assert remote.messages == [("counter/label", payload)]
 
 
 def test_failed_jobsend_is_saved_and_flushed(tmp_path):

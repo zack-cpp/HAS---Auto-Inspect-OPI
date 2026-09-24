@@ -38,6 +38,15 @@ def test_installer_adds_narrow_counterctl_kiosk_restart_bridge():
     assert 'touch "$KIOSK_RESTART_READY"' in installer
 
 
+def test_installer_keeps_compose_env_readable_by_checkout_owner():
+    installer = SETUP_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'app_owner_uid="$(stat -c \'%u\' "$APP_DIR")"' in installer
+    assert 'app_owner_gid="$(stat -c \'%g\' "$APP_DIR")"' in installer
+    assert 'install -o "$app_owner_uid" -g "$app_owner_gid" -m 0640 "$env_tmp" "$APP_ENV_FILE"' in installer
+    assert 'install -o root -g root -m 0600 "$env_tmp" "$APP_ENV_FILE"' not in installer
+
+
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
     path.chmod(0o755)

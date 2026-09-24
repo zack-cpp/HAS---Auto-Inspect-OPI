@@ -4,6 +4,11 @@ This directory packages the MQTT bridge, OTA handler, and barcode scanner as
 independent containers built from one ARM64 Python image. A fourth container
 serves the downloaded OTA files at `/updates/`.
 
+Scanner events are published to the local broker on `counter/label` for
+employee-profile URLs and `counter/label-sku` for other barcode values. The
+MQTT bridge subscribes to both topics and forwards them unchanged to the remote
+broker.
+
 ## Orange Pi prerequisites
 
 - AArch64 Debian/Ubuntu-based OS
@@ -41,6 +46,10 @@ The installer also configures root autologin on tty1, starts the
 X11/Openbox/Chromium kiosk, creates a dedicated Xauthority directory, and
 updates the cloned application's `.env`. The managed values include
 `OTA_HTTP_PORT=80` and the X11 settings, while unrelated values are preserved.
+The file is installed as mode `0640` and owned by the application checkout's
+owner and group, allowing that operator to run Docker Compose without making
+the deployment settings world-readable. MQTT passwords are never stored in
+`.env`.
 It configures the documented `eth0` DHCP and `eth1` shared-network connections,
 so review those assumptions before running it.
 
