@@ -1,6 +1,40 @@
 from __future__ import annotations
 
-from counter_inspect.scanner import KeyboardScanBuffer
+import json
+import logging
+
+import paho.mqtt.client as mqtt
+
+from counter_inspect.config import clone_default_credentials, clone_default_runtime, parse_settings
+from counter_inspect.scanner import KeyboardScanBuffer, ScannerService, TOPIC_EMPLOYEE
+
+
+class FakePublishResult:
+    rc = mqtt.MQTT_ERR_SUCCESS
+
+
+class FakeClient:
+    def __init__(self):
+        self.messages = []
+
+    def is_connected(self):
+        return True
+
+    def publish(self, topic, payload):
+        self.messages.append((topic, payload))
+        return FakePublishResult()
+
+
+def make_service(tmp_path):
+    runtime = clone_default_runtime()
+    runtime["device_id"] = "HAS-AI-0016"
+    runtime["storage"]["log_dir"] = str(tmp_path / "logs")
+    runtime["storage"]["queue_dir"] = str(tmp_path / "queue")
+    runtime["ota"]["updates_dir"] = str(tmp_path / "updates")
+    settings = parse_settings(runtime, clone_default_credentials())
+    service = ScannerService(settings, logging.getLogger("scanner-publish-test"))
+    service.client = FakeClient()
+    return service
 
 
 def type_text(
@@ -22,6 +56,31 @@ def test_fast_employee_url_is_accepted():
     scan = buffer.feed(enter=True, timestamp=timestamp)
     assert scan is not None
     assert scan.barcode == "https://host/employee-profile/1234"
+
+
+def test_mangled_employee_url_is_normalized_and_published_as_employee(tmp_path):
+    service = make_service(tmp_path)
+
+    service.publish_scan(
+        "https>&&berdikari.indonesiaornamenteknologi.co.id&employee/profile&HR/EMP/02006"
+    )
+
+    assert len(service.client.messages) == 1
+    topic, encoded_payload = service.client.messages[0]
+    payload = json.loads(encoded_payload)
+    assert topic == TOPIC_EMPLOYEE
+    assert payload["employeeNik"] == "HR-EMP-02006"
+
+
+def test_employee_url_detection_is_case_insensitive(tmp_path):
+    service = make_service(tmp_path)
+
+    service.publish_scan("HTTPS://HOST/EMPLOYEE-PROFILE/HR-EMP-02006")
+
+    topic, encoded_payload = service.client.messages[0]
+    payload = json.loads(encoded_payload)
+    assert topic == TOPIC_EMPLOYEE
+    assert payload["employeeNik"] == "HR-EMP-02006"
 
 
 def test_slow_human_typing_is_rejected():

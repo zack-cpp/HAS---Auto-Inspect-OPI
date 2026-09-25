@@ -129,6 +129,7 @@ packages=(
     openbox
     procps
     xauth
+    x11-xkb-utils
     x11-xserver-utils
     xinit
     xserver-xorg
@@ -481,6 +482,8 @@ if [[ -f "$APP_DIR/config/credentials.enc" ]]; then
 fi
 
 env_tmp="$(mktemp "$APP_DIR/.env.tmp.XXXXXX")"
+app_owner_uid="$(stat -c '%u' "$APP_DIR")"
+app_owner_gid="$(stat -c '%g' "$APP_DIR")"
 if [[ -f "$APP_ENV_FILE" ]]; then
     awk -v begin="$ENV_BEGIN" -v end="$ENV_END" '
         $0 == begin { managed = 1; next }
@@ -501,7 +504,10 @@ XAUTHORITY_DIR=$XAUTHORITY_DIR
 X11_HOSTNAME=$X11_HOSTNAME
 $ENV_END
 ENV_EOF
-install -o root -g root -m 0600 "$env_tmp" "$APP_ENV_FILE"
+# Compose is normally run by the owner of the application checkout. Keep the
+# file private to that owner and group while avoiding a root-only file in an
+# unprivileged user's checkout. MQTT passwords are not stored in this file.
+install -o "$app_owner_uid" -g "$app_owner_gid" -m 0640 "$env_tmp" "$APP_ENV_FILE"
 rm -f "$env_tmp"
 
 cat >"$URL_FILE" <<EOF
@@ -661,6 +667,10 @@ if command -v setterm >/dev/null 2>&1; then
 fi
 
 openbox-session &
+
+# Generic USB barcode scanners normally emit keycodes for a US keyboard.
+# Pin the X11 layout so URL punctuation and hyphens are decoded correctly.
+setxkbmap -layout us || true
 
 # Disable the X11 screen saver, screen blanking, and DPMS power-off timers.
 xset s off || true

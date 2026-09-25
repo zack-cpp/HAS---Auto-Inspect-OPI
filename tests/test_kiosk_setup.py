@@ -292,6 +292,8 @@ def test_zero3_wrapper_selects_noble_arm64_surf_and_os_zram():
     assert 'os_codename" != "noble"' in wrapper
     assert 'dpkg --print-architecture' in wrapper
     assert 'packages+=(surf)' in installer
+    assert 'x11-xkb-utils' in installer
+    assert 'setxkbmap -layout us' in installer
     assert 'packages+=(kmod zram-tools)' in installer
     assert 'swapon --noheadings --raw --show=NAME' in wrapper
     assert 'systemctl disable zramswap.service' in wrapper

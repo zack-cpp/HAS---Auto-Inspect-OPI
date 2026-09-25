@@ -9,6 +9,11 @@ employee-profile URLs and `counter/label-sku` for other barcode values. The
 MQTT bridge subscribes to both topics and forwards them unchanged to the remote
 broker.
 
+The kiosk pins X11 to the US keyboard layout expected by generic USB barcode
+scanners. The scanner service also recognizes the punctuation substitutions
+seen when an older installation captures US scanner keycodes through a
+mismatched X11 layout, and restores the employee URL and NIK before publishing.
+
 ## Orange Pi prerequisites
 
 - AArch64 Debian/Ubuntu-based OS

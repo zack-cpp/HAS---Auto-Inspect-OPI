@@ -17,6 +17,31 @@ from .runtime import Shutdown, touch_heartbeat
 TOPIC_EMPLOYEE = "counter/label"
 TOPIC_ITEM = "counter/label-sku"
 MINIMUM_SCAN_LENGTH = 2
+EMPLOYEE_PROFILE_MARKER = "/employee-profile/"
+# A USB scanner configured for the US keyboard layout produces this marker
+# when X11 is using the layout observed on affected Orange Pi installations:
+# ':' -> '>', '/' -> '&', and '-' -> '/'.
+MANGLED_EMPLOYEE_PROFILE_MARKER = "&employee/profile&"
+MANGLED_US_KEYBOARD_TRANSLATION = str.maketrans({">": ":", "&": "/", "/": "-"})
+
+
+def normalize_scanner_barcode(barcode: str) -> str:
+    cleaned = barcode.strip()
+    folded = cleaned.casefold()
+    if EMPLOYEE_PROFILE_MARKER in folded:
+        return cleaned
+    if MANGLED_EMPLOYEE_PROFILE_MARKER in folded:
+        return cleaned.translate(MANGLED_US_KEYBOARD_TRANSLATION)
+    return cleaned
+
+
+def employee_nik_from_barcode(barcode: str) -> str | None:
+    folded = barcode.casefold()
+    marker_position = folded.find(EMPLOYEE_PROFILE_MARKER)
+    if marker_position < 0:
+        return None
+    employee_nik = barcode[marker_position + len(EMPLOYEE_PROFILE_MARKER) :]
+    return employee_nik or None
 
 
 @dataclass(frozen=True)
@@ -205,16 +230,20 @@ class ScannerService:
         time.sleep(timeout)
 
     def publish_scan(self, barcode: str) -> None:
+        normalized_barcode = normalize_scanner_barcode(barcode)
+        if normalized_barcode != barcode.strip():
+            self.logger.info("Normalized scanner output from a mismatched X11 keyboard layout")
         payload: dict[str, object] = {
             "serialNumber": self.settings.device_id,
             "serverTime": int(time.time()),
         }
-        if "/employee-profile/" in barcode:
+        employee_nik = employee_nik_from_barcode(normalized_barcode)
+        if employee_nik is not None:
             topic = TOPIC_EMPLOYEE
-            payload["employeeNik"] = barcode.split("/employee-profile/", 1)[1]
+            payload["employeeNik"] = employee_nik
         else:
             topic = TOPIC_ITEM
-            payload["skuCode"] = barcode
+            payload["skuCode"] = normalized_barcode
         message = json.dumps(payload, indent=4)
         self.logger.info("Scanned on %s: %s", topic, message)
         if self.client is None or not self.client.is_connected():
